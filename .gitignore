@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# Project data & artifacts (large, regenerable, or point-in-time snapshots)
+data/
+artifacts/
+*.duckdb
+*.duckdb.wal
+*.parquet
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+DESIGN.md
+readme.md
