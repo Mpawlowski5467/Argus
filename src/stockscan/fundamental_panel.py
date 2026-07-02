@@ -19,7 +19,7 @@ import pandas as pd
 from .config import DELISTING_RETURN, LABEL_HORIZON_DAYS, MIN_SECTOR_BUCKET
 from .edgar.tickers import cik_to_ticker
 from .features import FEATURES
-from .panel import forward_return, month_end_dates
+from .panel import forward_return_to_last, month_end_dates
 from .pit import assert_pit, available_date
 from .sector import sic_division
 
@@ -57,7 +57,10 @@ def build_fundamental_panel(
     feats = feats.dropna(subset=["available_date"]).sort_values("available_date")
     feats = feats[["cik", "filed_date", "available_date", "sector", *FEATURES]]
 
-    fwd = forward_return(close, horizon)
+    # Terminal-aware label: a name that stops trading inside the window is labeled
+    # with its real last-trade return, so (with delisted-inclusive prices) death
+    # declines enter the label without any imputed haircut.
+    fwd = forward_return_to_last(close, horizon)
     idx = close.index
     dv_med = dollar_volume.rolling(20, min_periods=10).median() if dollar_volume is not None else None
 

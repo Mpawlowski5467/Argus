@@ -1,11 +1,18 @@
 """Phase 1 go/no-go: survivorship-corrected, liquidity-filtered, winsorized, multi-regime.
 
-Assembles the point-in-time fundamental panel (liquid tradable names + re-injected
-delisting failures, forward returns winsorized per date), then reports single-factor
-ICs, a composite, a walk-forward LightGBM, and the delisting-haircut sensitivity sweep.
+Assembles the point-in-time fundamental panel (liquid tradable names + delisting
+failures, forward returns winsorized per date), then reports single-factor ICs, a
+composite, a walk-forward LightGBM, and the delisting-haircut sensitivity sweep.
 
-  uv run python scripts/run_phase1.py
+With survivorship-free prices (Intrinio universe), ``--no-impute`` drops the ledger
+imputation entirely: dead names' declines enter through their REAL price history and
+terminal (last-trade) returns — no assumed haircut, no circularity. That is the
+honest headline configuration; the default imputing run remains for comparison.
+
+  uv run python scripts/run_phase1.py [--no-impute]
 """
+
+import argparse
 
 import duckdb
 import numpy as np
@@ -15,6 +22,7 @@ from stockscan.config import DELISTING_HAIRCUT_SWEEP, MIN_DOLLAR_VOLUME
 from stockscan.edgar.delistings import load_delistings
 from stockscan.features import FEATURE_SIGN, FEATURES, compute_features
 from stockscan.fundamental_panel import build_fundamental_panel
+from stockscan.intrinio_universe import universe_ticker_map
 from stockscan.model import evaluate
 from stockscan.panel import load_matrices
 from stockscan.validation import ic_summary, rank_ic
@@ -22,9 +30,19 @@ from stockscan.validation import ic_summary, rank_ic
 WINSOR = (0.01, 0.99)
 
 
-def _build(feats, close, dv, delistings, reason_return=None):
+def parse_args(argv=None) -> argparse.Namespace:
+    ap = argparse.ArgumentParser(description="Phase 1 go/no-go gate.")
+    ap.add_argument(
+        "--no-impute", action="store_true",
+        help="drop the delisting-return imputation (delistings=None); failures enter "
+             "only through real delisted price history + terminal returns",
+    )
+    return ap.parse_args(argv)
+
+
+def _build(feats, close, dv, delistings, reason_return=None, ticker_map=None):
     return build_fundamental_panel(
-        feats, close, delistings=delistings, dollar_volume=dv,
+        feats, close, delistings=delistings, dollar_volume=dv, ticker_map=ticker_map,
         min_dollar_volume=MIN_DOLLAR_VOLUME, winsorize=WINSOR, reason_return=reason_return,
     )
 
@@ -38,7 +56,8 @@ def _composite_ic(panel):
     return ic_summary(rank_ic(tmp, feature="composite"))
 
 
-def main() -> int:
+def main(argv=None) -> int:
+    args = parse_args(argv)
     wide = duckdb.query(f"select * from read_parquet('{WIDE_PATH}')").df()
     feats = compute_features(wide)
     close, dv = load_matrices()
@@ -46,8 +65,11 @@ def main() -> int:
         print("no prices; run scripts/ingest_prices.py first")
         return 1
 
-    delistings = load_delistings()
-    panel = _build(feats, close, dv, delistings)
+    tmap = universe_ticker_map() or None  # survivorship-free map when built; else EDGAR
+    delistings = None if args.no_impute else load_delistings()
+    print(f"mode: {'NO-IMPUTE (real delisted prices only)' if args.no_impute else 'with delisting imputation'}"
+          f"  |  ticker map: {'intrinio universe (' + str(len(tmap)) + ' ciks)' if tmap else 'EDGAR current'}")
+    panel = _build(feats, close, dv, delistings, ticker_map=tmap)
     if panel.empty:
         print("empty panel")
         return 1
@@ -77,17 +99,20 @@ def main() -> int:
             f"decile_spread={m['decile_spread']:+.4f}  (oos dates={m['oos_dates']})"
         )
 
-    print("\ndelisting-haircut sweep (edge must survive the whole range):")
-    for h in DELISTING_HAIRCUT_SWEEP:
-        s = _composite_ic(_build(feats, close, dv, delistings, reason_return={"delist": h, "dereg": h}))
-        print(f"  haircut {h:+.2f}:  composite IC={s['mean_ic']:+.4f}  t_nw={s['t_nw']:+.2f}")
+    if args.no_impute:
+        print("\n(haircut sweep skipped: nothing is imputed in --no-impute mode)")
+    else:
+        print("\ndelisting-haircut sweep (edge must survive the whole range):")
+        for h in DELISTING_HAIRCUT_SWEEP:
+            s = _composite_ic(_build(feats, close, dv, delistings,
+                                     reason_return={"delist": h, "dereg": h}, ticker_map=tmap))
+            print(f"  haircut {h:+.2f}:  composite IC={s['mean_ic']:+.4f}  t_nw={s['t_nw']:+.2f}")
 
     print(
-        "\nHONEST READ: liquidity filter + winsorization make the decile spread meaningful and\n"
-        "cut micro-cap survivorship. If t-stats are still implausibly high (>~5) or accruals/\n"
-        "asset_growth stay positive, residual survivorship bias persists (free prices still miss\n"
-        "delisted names' living history) -> treat as an UPPER BOUND. Full closure needs paid,\n"
-        "survivorship-free data (CRSP/Compustat)."
+        "\nHONEST READ: with the Intrinio survivorship-free universe, dead names carry their\n"
+        "real price history and terminal returns; --no-impute is the trustworthy configuration\n"
+        "(no haircut circularity). Gate: mean rank IC >= 0.03, overlap-corrected t >= 2,\n"
+        "positive net-of-cost decile spread, and (imputing mode) sweep-stable."
     )
     return 0
 

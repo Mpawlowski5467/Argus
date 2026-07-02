@@ -44,3 +44,33 @@ def test_panel_imputes_dying_name_and_excludes_dead():
     bbb = jan.loc[jan["cik"] == 2].iloc[0]
     assert abs(bbb["label"] - (-1.00)) < 1e-9  # 'dereg' = going-dark -> -1.00 (from config)
     assert "coverage" in panel.attrs  # survivorship gap is recorded
+
+
+def _close_with_death():
+    """AAA trades throughout; DDD~2 collapses and stops trading mid-February."""
+    idx = pd.bdate_range("2024-01-01", "2024-03-29")
+    close = pd.DataFrame({"AAA": np.linspace(100.0, 130.0, len(idx))}, index=idx)
+    dead = pd.Series(np.linspace(50.0, 5.0, 34), index=idx[:34])  # last trade 2024-02-15
+    close["DDD~2"] = dead.reindex(idx)
+    return close
+
+
+def test_no_impute_uses_real_terminal_returns_and_never_imputes():
+    """delistings=None (the --no-impute path): failures enter ONLY via real prices."""
+    ticker_map = {1: "AAA", 2: "DDD~2", 3: "CCC"}  # cik 3 has no prices at all
+    close = _close_with_death()
+
+    panel = build_fundamental_panel(
+        _features(), close, delistings=None, ticker_map=ticker_map,
+        horizon=21, min_names=1,
+    )
+    assert not panel["imputed"].any()  # nothing imputed, ever
+    jan = panel[panel["date"] == pd.Timestamp("2024-01-31")]
+    assert set(jan["cik"]) == {1, 2}   # unpriced cik 3 drops; dying cik 2 stays via real prices
+
+    # the dying name's label is its REAL terminal return: last trade / entry - 1
+    entry = close.loc[pd.Timestamp("2024-01-31"), "DDD~2"]
+    terminal = 5.0  # its final print
+    ddd = jan.loc[jan["cik"] == 2].iloc[0]
+    assert abs(ddd["label"] - (terminal / entry - 1)) < 1e-9
+    assert ddd["label"] < -0.5  # the decline is captured, not dropped

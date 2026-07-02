@@ -19,6 +19,7 @@ from stockscan.config import MIN_DOLLAR_VOLUME
 from stockscan.edgar.delistings import load_delistings
 from stockscan.features import FEATURE_SIGN, FEATURES, compute_features
 from stockscan.fundamental_panel import build_fundamental_panel
+from stockscan.intrinio_universe import universe_ticker_map
 from stockscan.model import evaluate
 from stockscan.panel import load_matrices
 from stockscan.validation import ic_summary, newey_west_tstat, rank_ic
@@ -29,6 +30,7 @@ WINSOR = (0.01, 0.99)
 def _build(feats, close, dv, delistings):
     return build_fundamental_panel(
         feats, close, delistings=delistings, dollar_volume=dv,
+        ticker_map=universe_ticker_map() or None,
         min_dollar_volume=MIN_DOLLAR_VOLUME, winsorize=WINSOR,
     )
 

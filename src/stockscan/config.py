@@ -12,6 +12,21 @@ from pathlib import Path
 
 # --- paths --------------------------------------------------------------------
 REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def _load_dotenv(path: Path) -> None:
+    """Minimal .env loader (KEY=VALUE lines) so API tokens stay out of chat and git."""
+    if not path.exists():
+        return
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        os.environ.setdefault(key.strip(), val.strip().strip("'\""))
+
+
+_load_dotenv(REPO_ROOT / ".env")
 DATA_DIR = Path(os.environ.get("STOCKSCAN_DATA_DIR", REPO_ROOT / "data"))
 RAW_DIR = DATA_DIR / "raw"          # untouched downloads (FSDS zips, Stooq dumps)
 PARQUET_DIR = DATA_DIR / "parquet"  # the immutable point-in-time panel + prices
@@ -30,9 +45,10 @@ EDGAR_USER_AGENT = os.environ.get(
 EDGAR_MAX_RPS = float(os.environ.get("STOCKSCAN_EDGAR_MAX_RPS", "8"))
 
 # --- price provider -----------------------------------------------------------
-# "yfinance" (free, survivorship-biased) or "tiingo" (paid, delisted-inclusive).
+# "yfinance" (free, survivorship-biased), "tiingo", or "intrinio" (paid, delisted-inclusive).
 PRICE_PROVIDER = os.environ.get("STOCKSCAN_PRICE_PROVIDER", "yfinance")
 TIINGO_TOKEN = os.environ.get("STOCKSCAN_TIINGO_TOKEN", "")
+INTRINIO_API_KEY = os.environ.get("STOCKSCAN_INTRINIO_KEY", "")
 
 # --- local LLM (NARRATE stage) ------------------------------------------------
 # OpenAI-compatible endpoint: Ollama (http://localhost:11434/v1) or llama.cpp/MLX server.

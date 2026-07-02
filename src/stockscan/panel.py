@@ -56,6 +56,25 @@ def forward_return(close: pd.DataFrame, horizon: int = LABEL_HORIZON_DAYS) -> pd
     return close.shift(-horizon) / close - 1.0
 
 
+def forward_return_to_last(close: pd.DataFrame, horizon: int = LABEL_HORIZON_DAYS) -> pd.DataFrame:
+    """Forward return that uses the LAST traded price for series ending mid-window.
+
+    Identical to :func:`forward_return` for continuously-traded names. A name whose
+    series ends inside the horizon (delisting) gets its real terminal return
+    (last trade / entry - 1) instead of NaN -- with delisted-inclusive price data this
+    captures the actual death decline, replacing the imputed-haircut convention.
+    A mid-window trading halt is likewise labeled with the return to the halt price
+    (you could not have traded past it). Uses future prices -- it's the label.
+
+    The fill limit is ``horizon - 1`` so the terminal price must lie STRICTLY inside
+    (d, d+horizon]: at limit=horizon the fill source can be close[d] itself, which
+    would fabricate an information-free 0.0 label for every name whose last-ever
+    trade falls exactly on a sampling date.
+    """
+    filled = close.ffill(limit=horizon - 1) if horizon > 1 else close
+    return filled.shift(-horizon) / close - 1.0
+
+
 def month_end_dates(index: pd.DatetimeIndex) -> list[pd.Timestamp]:
     """Last trading day of each month present in ``index`` (monthly rebalance grid)."""
     s = pd.Series(index, index=index)

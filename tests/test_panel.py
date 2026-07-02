@@ -3,7 +3,7 @@
 import numpy as np
 import pandas as pd
 
-from stockscan.panel import build_panel, forward_return, momentum_12_1
+from stockscan.panel import build_panel, forward_return, forward_return_to_last, momentum_12_1
 
 
 def _close(n=400, n_tickers=8):
@@ -20,6 +20,27 @@ def test_forward_return_matches_manual_shift():
     for col in c.columns:
         expected = c[col].iloc[t + 63] / c[col].iloc[t] - 1
         assert abs(fr[col].iloc[t] - expected) < 1e-9
+
+
+def test_forward_return_to_last_uses_terminal_price_for_dying_names():
+    c = _close(n=200, n_tickers=2)
+    # ticker B stops trading at position 100 (delisting) -- its real terminal price
+    death, last_price = 100, c["B"].iloc[100]
+    c.loc[c.index[death + 1]:, "B"] = np.nan
+
+    fr = forward_return_to_last(c, horizon=63)
+    plain = forward_return(c, horizon=63)
+    t = 80  # window [80, 143] straddles the death at 100
+    assert np.isnan(plain["B"].iloc[t])                      # plain shift: no label
+    expected = last_price / c["B"].iloc[t] - 1
+    assert abs(fr["B"].iloc[t] - expected) < 1e-9            # real last-trade return
+    # continuously-traded names are untouched
+    assert abs(fr["A"].iloc[t] - plain["A"].iloc[t]) < 1e-12
+    # long-dead names get no label (no entry price at t)
+    assert np.isnan(fr["B"].iloc[180])
+    # a name whose LAST-EVER trade is the sampling date itself must get NaN, not a
+    # fabricated 0.0 (there is no price strictly inside the forward window)
+    assert np.isnan(fr["B"].iloc[death])
 
 
 def test_momentum_matches_manual_shift():

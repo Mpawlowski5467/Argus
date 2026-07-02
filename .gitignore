@@ -14,6 +14,10 @@ artifacts/
 *.duckdb.wal
 *.parquet
 
+# Secrets (API tokens) — never commit
+.env
+*.secret
+
 # OS / editor
 .DS_Store
 .idea/
