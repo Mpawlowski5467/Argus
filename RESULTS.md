@@ -1,3 +1,89 @@
+# Phase-3 — Backtest & Signal Mechanics Verdict (2026-07-02)
+
+**GATE: PASS.** The net-of-cost edge survives real trading mechanics. Signals are the
+purged walk-forward OOS model scores (never the in-sample artifact); execution is
+next-bar open with liquidity-scaled costs; the whole thing runs on the honest
+no-impute panel. `uv run python scripts/run_phase3.py [--cpcv]`.
+
+## Headline (2013-08 → 2026-03, 152 monthly rebalances, ~2,600 liquid names)
+
+| book | net CAGR | gross | Sharpe | maxDD | turnover |
+|---|---|---|---|---|---|
+| universe EW (benchmark) | +7.79% | +8.80% | 0.36 | −42% | 1.1x/yr |
+| **long-only, hysteresis** | **+9.26%** | +10.52% | **0.42** | −42% | 1.6x/yr |
+| long-only, hard decile | +6.93% | +9.16% | 0.29 | −44% | 3.0x/yr |
+| long/short, hysteresis | −1.29% | +1.52% | −0.13 | −36% | 3.9x/yr |
+
+- **Long-only beats the universe by +1.48%/yr net**, and stays ahead at 2x costs
+  (+8.02%). A modest, real, capacity-limited edge — consistent with the IC story.
+- **Hysteresis is load-bearing**: enter-20%/exit-40% beats the hard decile by
+  +2.33%/yr net while nearly halving turnover. Signal decay is slower than monthly
+  churn; trading less is worth more than holding the sharpest tail.
+- **The short book dies of borrow + costs, exactly as §6 predicted**: +1.52% gross
+  → −1.29% net (−1.75% at 2x borrow). Verdict per the §6 rule: **drop the short
+  book**; the product signal is long-tilt only.
+- **Where the edge lives**: decile spread +4.3%/qtr in $1-5M-ADV names, +1.8% in
+  $5-25M, +0.5% in >$25M — positive everywhere (gate passes) but strongly
+  small-cap-tilted. For a personal-scale account this is fine (its capacity IS
+  personal-scale); it is not an institutional strategy claim.
+- IC by sector bucket: financials +0.030 (t 2.3), non-financials +0.043 (t 6.1).
+- **CPCV distribution** (45 purged combinations): mean IC +0.037, 5th pct +0.013,
+  100% of combinations positive. **PBO (CSCV, 12,870 splits)**: 0.03 over the
+  six long-only variants (the family we actually select from — gated), 0.26 over
+  all 12 trials including the structurally-losing L/S half.
+
+## What real data broke (and how it was fixed)
+
+The first full run produced garbage that LOOKED like alpha: universe EW at +32%
+CAGR / 122% vol, one +424% portfolio day. Diagnosis in two acts:
+
+1. **Sub-penny quantization**: adjusted closes are stored to 4 decimals, so junk
+   names print 0 → 0.0001 (= +inf%). 207,661 prints masked below a $0.01 trust
+   floor — crashes into the floor are taken, bounces inside it never compound.
+2. **Vendor scale breaks**: some dead names' adjusted series jump scale mid-stream
+   (Shineco printed 11.09 → 137,160.00 overnight on ~$100k volume — a mis-applied
+   corporate action). My first fix froze series at the break — and the adversarial
+   review workflow proved that WRONG in the dangerous direction: the same threshold
+   caught Tricida's real −94.5% trial-failure day, so a held position would have
+   exited at the pre-crash price (look-ahead in our favor). The shipped fix
+   REPAIRS instead of erasing: a one-day ratio beyond anything real (>20x up,
+   <−96% down, consecutive prints only so delisting-splice gaps stay real) has its
+   log-return zeroed and the series rebuilt at a consistent scale. 1,677 break
+   days across 192 series repaired; Tricida-class real crashes hit the NAV in full.
+
+Other review catches (36-agent adversarial workflow; all fixed + regression-tested):
+a missing open print caused a costless phantom exit at the stale prior close (now
+fills at the same-day close, with cost); traded notional compared unnormalized
+drifted weights (costs were understated whenever the window return was nonzero); a
+short squeeze could take NAV negative and NaN the summary (now liquidates to zero);
+signals predating the price history wrapped to end-of-sample liquidity; the NAV
+series lacked its inception point; PBO silently passed NaN-lambda combinations and
+was structurally flattered by the losing L/S trials (now reported per family and
+gated on long-only); test fixtures had open==close everywhere so open-fills were
+untested.
+
+## Honest caveats
+
+- The label-side diagnostics (IC, bucket spreads) use unrepaired prices (their 1/99
+  winsorization already clips artifacts); the NAV uses repaired prices. A unified
+  data-layer repair (and ideally re-fetching unadjusted prices) is the clean fix —
+  backlog for the data layer, measured here rather than hidden.
+- Liquidity floors still run on adjusted closes (Phase-2 note stands).
+- Costs/borrow are modeled schedules (tiered by ADV), not broker quotes; the 2x
+  stress bounds the assumption.
+- Scores are walk-forward OOS, but strategy-variant selection (hysteresis bands)
+  is in-sample across the whole period — that's what the PBO=0.03 addresses.
+- No distress-flag hard exits yet (needs the distress head, deferred).
+
+## Deferred
+
+- Phase 4: narration hardening (LLM serving, SHAP top-k, faithfulness eval).
+- Phase 5: monitoring loop, paper-forward vs backtest, artifact vintages.
+- Data layer: unadjusted price fetch (liquidity floors + repair at source),
+  value features via PIT market cap, 10-Q cadence, distress head.
+
+---
+
 # Phase-2 — Walking Skeleton Verdict (2026-07-01)
 
 End-to-end per-ticker serve path over the frozen model: `scripts/analyze.py TICKER

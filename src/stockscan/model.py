@@ -51,8 +51,13 @@ def walk_forward_predict(
     embargo: int = 2,
     horizon_periods: int = 3,
     params: dict | None = None,
+    id_cols: tuple = (),
 ) -> pd.DataFrame:
-    """Train per fold on the past, predict the held-out future. Returns pooled OOS preds."""
+    """Train per fold on the past, predict the held-out future. Returns pooled OOS preds.
+
+    ``id_cols`` (e.g. ``("cik", "ticker", "sector")``) are carried through so the
+    backtester can key positions off the predictions.
+    """
     feature_cols = feature_cols or RANK_COLS
     params = {**DEFAULT_PARAMS, **(params or {})}
     dates = sorted(panel["date"].unique())
@@ -67,7 +72,7 @@ def walk_forward_predict(
             continue
         model = lgb.LGBMRegressor(**params)
         model.fit(tr[feature_cols].fillna(0.5), tr[label])
-        out = te[["date", label]].copy()
+        out = te[["date", *id_cols, label]].copy()
         out["pred"] = model.predict(te[feature_cols].fillna(0.5))
         out.attrs = {}  # drop inherited panel.attrs (a DataFrame) so pd.concat doesn't choke
         preds.append(out)

@@ -63,6 +63,93 @@ def ic_summary(ic: pd.Series, overlap_lag: int = _OVERLAP_PERIODS - 1) -> dict:
     }
 
 
+def cpcv_splits(
+    dates,
+    n_groups: int = 10,
+    k_test: int = 2,
+    embargo: int = 2,
+    horizon_periods: int = _OVERLAP_PERIODS,
+):
+    """Combinatorial Purged CV: every C(n_groups, k_test) pair of contiguous date
+    groups serves as a test set, training on the rest with a purge of
+    ``horizon_periods + embargo`` periods around EVERY test block (both sides —
+    labels look forward, so leakage runs in both directions across a boundary).
+
+    Returns a list of ``(train_dates, test_dates)``. Aggregating per-combination OOS
+    metrics gives a DISTRIBUTION of the edge instead of one walk-forward number.
+    """
+    from itertools import combinations
+
+    dates = list(pd.to_datetime(pd.Index(dates).unique()).sort_values())
+    m = len(dates)
+    if m < n_groups:
+        return []
+    bounds = np.array_split(np.arange(m), n_groups)
+    gap = horizon_periods + embargo
+    out = []
+    for combo in combinations(range(n_groups), k_test):
+        test_pos = np.concatenate([bounds[g] for g in combo])
+        test_mask = np.zeros(m, dtype=bool)
+        test_mask[test_pos] = True
+        # dilate the test mask by `gap` positions on each side -> purged zone
+        purged = test_mask.copy()
+        for s in range(1, gap + 1):
+            purged[s:] |= test_mask[:-s]
+            purged[:-s] |= test_mask[s:]
+        train = [dates[j] for j in range(m) if not purged[j]]
+        test = [dates[j] for j in test_pos]
+        if train and test:
+            out.append((train, test))
+    return out
+
+
+def pbo_cscv(returns: pd.DataFrame, n_blocks: int = 16) -> dict:
+    """Probability of Backtest Overfitting via CSCV (Bailey/López de Prado).
+
+    ``returns``: T x N matrix — one return series per strategy TRIAL (every variant
+    actually tried, so selection bias is measured, not hidden). Rows are split into
+    ``n_blocks`` contiguous blocks; for every half/half combination the in-sample
+    winner's OUT-of-sample relative rank ``omega`` is logged. PBO = fraction of
+    combinations where the IS winner lands in the OOS bottom half.
+    """
+    from itertools import combinations
+
+    rets = returns.dropna(how="all").fillna(0.0)
+    T, n = rets.shape
+    if n < 2 or T < n_blocks:
+        return {"pbo": float("nan"), "n_combos": 0}
+
+    def perf(frame: pd.DataFrame) -> pd.Series:  # Sharpe-like, frequency-agnostic
+        mu, sd = frame.mean(), frame.std(ddof=1)
+        return mu / sd.replace(0.0, np.nan)
+
+    blocks = np.array_split(np.arange(T), n_blocks)
+    lambdas, skipped = [], 0
+    for combo in combinations(range(n_blocks), n_blocks // 2):
+        in_set = set(combo)
+        is_idx = np.concatenate([blocks[b] for b in combo])
+        oos_idx = np.concatenate([blocks[b] for b in range(n_blocks) if b not in in_set])
+        perf_is = perf(rets.iloc[is_idx])
+        perf_oos = perf(rets.iloc[oos_idx])
+        if perf_is.isna().all():
+            skipped += 1
+            continue
+        best = perf_is.idxmax()
+        rank = perf_oos.rank().get(best, np.nan)
+        if not np.isfinite(rank):  # winner's OOS half degenerate: uninformative, not a pass
+            skipped += 1
+            continue
+        omega = float(rank) / (n + 1)
+        lambdas.append(np.log(omega / (1.0 - omega)))
+    lam = np.asarray(lambdas)
+    return {
+        "pbo": float((lam <= 0).mean()) if len(lam) else float("nan"),
+        "n_combos": int(len(lam)),
+        "n_skipped": skipped,
+        "lambda_mean": float(lam.mean()) if len(lam) else float("nan"),
+    }
+
+
 def purged_walk_forward(
     dates, n_splits: int = 5, embargo: int = 2, horizon_periods: int = _OVERLAP_PERIODS
 ):

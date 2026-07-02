@@ -76,3 +76,28 @@ DELISTING_HAIRCUT_SWEEP = (-0.30, -0.55, -0.70, -1.00)
 # --- go/no-go gate (Phase 1) --------------------------------------------------
 GATE_MIN_IC = 0.03                # out-of-sample mean rank IC
 GATE_MIN_IC_TSTAT = 2.0           # overlap-corrected t-stat
+
+# --- backtest / signal mechanics (Phase 3, DESIGN.md §6) -----------------------
+# Per-SIDE trading cost in bps keyed to 20d-median dollar volume at trade time.
+# Calibration anchor (DESIGN.md §9): small-cap round-trips are 50-150+ bps, not 15;
+# mega-cap round-trips ~10-20 bps.
+COST_TIERS_BPS = (
+    (50_000_000, 10.0),
+    (10_000_000, 20.0),
+    (5_000_000, 35.0),
+    (1_000_000, 60.0),
+    (0, 100.0),
+)
+# Annualized borrow fee (bps) for the short book, by ADV; below SHORT_MIN_ADV a name
+# is treated as hard-to-borrow and excluded from the short book entirely (the
+# borrow-realism mandate: short alpha commonly dies after borrow costs).
+BORROW_TIERS_BPS = (
+    (10_000_000, 30.0),
+    (5_000_000, 100.0),
+    (0, 300.0),
+)
+SHORT_MIN_ADV = 5_000_000
+# Hysteresis (DESIGN.md §6): enter a book in the top (bottom) 20% by model score,
+# stay until falling out of the top (bottom) 40% — cuts turnover vs a hard decile.
+HYSTERESIS_ENTER = 0.20
+HYSTERESIS_EXIT = 0.40

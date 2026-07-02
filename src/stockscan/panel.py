@@ -31,19 +31,28 @@ def load_close_matrix(tickers=None, prices_dir=PRICES_DIR) -> pd.DataFrame:
     return df.pivot_table(index="date", columns="ticker", values="close").sort_index()
 
 
-def load_matrices(tickers=None, prices_dir=PRICES_DIR):
-    """Return (close, dollar_volume) wide matrices for the liquidity filter."""
+def load_matrices(tickers=None, prices_dir=PRICES_DIR, with_open: bool = False):
+    """Return (close, dollar_volume[, open]) wide matrices.
+
+    ``with_open=True`` adds the adjusted-open matrix (the backtester executes at
+    next-bar open, DESIGN.md §6); default stays two-tuple for existing callers.
+    """
     files = sorted(glob.glob(str(prices_dir / "*.parquet")))
     if not files:
-        return pd.DataFrame(), pd.DataFrame()
+        return (pd.DataFrame(),) * (3 if with_open else 2)
     src = "read_parquet([" + ",".join(f"'{f}'" for f in files) + "])"
-    df = duckdb.query(f"select ticker, date, close, close*volume as dv from {src}").df()
+    cols = "ticker, date, open, close, close*volume as dv" if with_open else \
+           "ticker, date, close, close*volume as dv"
+    df = duckdb.query(f"select {cols} from {src}").df()
     if tickers is not None:
         df = df[df["ticker"].isin({t.upper() for t in tickers})]
     df["date"] = pd.to_datetime(df["date"])
     close = df.pivot_table(index="date", columns="ticker", values="close").sort_index()
     dv = df.pivot_table(index="date", columns="ticker", values="dv").sort_index()
-    return close, dv
+    if not with_open:
+        return close, dv
+    opn = df.pivot_table(index="date", columns="ticker", values="open").sort_index()
+    return close, dv, opn
 
 
 def momentum_12_1(close: pd.DataFrame, lookback: int = 252, skip: int = 21) -> pd.DataFrame:
