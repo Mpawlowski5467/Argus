@@ -24,6 +24,10 @@ SYSTEM = (
     "- Quote values and percentiles exactly as given (e.g. '31%', '97th percentile').\n"
     "- No buy/sell advice, price targets, or predictions. This is analysis only.\n"
     "- The composite is a peer screen, not a forecast — say so if you mention it.\n"
+    "- If a 'model' section is present, describe it as the frozen statistical model's "
+    "cross-sectional signal (a relative rank, not a guarantee of returns).\n"
+    "- Respect each signal's 'direction': a HIGH percentile on a lower-is-better signal "
+    "(leverage, accruals, asset growth) is a weakness, not a strength.\n"
     "- Lead with the strongest and weakest signals; note any material YoY change."
 )
 
@@ -33,28 +37,45 @@ def _ord(n: int) -> str:
     return f"{n}{suffix}"
 
 
+def _effective_pct(s: dict) -> float:
+    """Goodness of a signal: its percentile, flipped for lower-is-better signals.
+
+    A 98th-percentile leverage is a WEAKNESS (most-levered name in the sector),
+    not a strength -- strongest/weakest ordering must respect the direction."""
+    return s["pct_rank"] if s["direction"] == "higher-is-better" else 100 - s["pct_rank"]
+
+
 def _template(packet: dict) -> str:
     m = packet["meta"]
     ranked = sorted(
         [s for s in packet["signals"] if s.get("pct_rank") is not None],
-        key=lambda s: s["pct_rank"],
+        key=_effective_pct,
         reverse=True,
     )
     def fmt(s):
-        return f"{s['label']} {s['value']}{s['unit']} ({_ord(s['pct_rank'])} pct)"
+        note = "" if s["direction"] == "higher-is-better" else "; lower is better"
+        return f"{s['label']} {s['value']}{s['unit']} ({_ord(s['pct_rank'])} pct{note})"
     strengths = "; ".join(fmt(s) for s in ranked[:3])
     weaker = "; ".join(fmt(s) for s in ranked[-3:])
     comp = packet["composite"]["percentile"]
     comp_txt = f"composite quality {_ord(comp)} percentile vs sector" if comp is not None else "composite n/a"
+    model_txt = ""
+    if packet.get("model"):
+        mm = packet["model"]
+        model_txt = (
+            f" Frozen-model signal (as of {mm['as_of']}, model trained through "
+            f"{mm['trained_through']}): {_ord(mm['percentile'])} percentile of the "
+            f"{mm['n_names']}-name cross-section (decile {mm['decile']}) — a relative "
+            f"rank, not a return forecast."
+        )
     return (
         f"{m['name']} (FY{m['fiscal_year']}, {m['sector']}): {comp_txt}. "
-        f"Strongest: {strengths}. Weakest: {weaker}. {packet['disclaimer']}"
+        f"Strongest: {strengths}. Weakest: {weaker}.{model_txt} {packet['disclaimer']}"
     )
 
 
-def narrate(company, llm=None, features_df=None, max_retries: int = 1) -> dict:
-    """Return {packet, narrative, grounded, source}. ``llm`` is a callable(system, user)->str."""
-    packet = build_packet(company, features_df=features_df)
+def narrate_packet(packet: dict, llm=None, max_retries: int = 1) -> dict:
+    """Narrate a pre-built packet. Returns {packet, narrative, grounded, source}."""
     if llm is None:
         return {"packet": packet, "narrative": _template(packet), "grounded": True, "source": "template"}
 
@@ -72,3 +93,9 @@ def narrate(company, llm=None, features_df=None, max_retries: int = 1) -> dict:
         "source": "template-fallback",
         "rejected_numbers": violations,
     }
+
+
+def narrate(company, llm=None, features_df=None, max_retries: int = 1) -> dict:
+    """Build the packet for ``company`` and narrate it. ``llm`` is a callable(system, user)->str."""
+    packet = build_packet(company, features_df=features_df)
+    return narrate_packet(packet, llm=llm, max_retries=max_retries)
