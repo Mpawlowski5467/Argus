@@ -12,6 +12,11 @@ dependencies = [
     "duckdb>=1.0",
     "scipy>=1.13",
     "python-dateutil>=2.9",
+    "yfinance>=0.2",
+    "lightgbm>=4.0",
+    "scikit-learn>=1.3",
+    # shap (narration attribution, Phase 4) is added later — it drags in numba/llvmlite
+    # which needs version pinning on Python 3.12.
 ]
 
 [project.optional-dependencies]

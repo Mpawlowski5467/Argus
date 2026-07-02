@@ -29,6 +29,16 @@ EDGAR_USER_AGENT = os.environ.get(
 )
 EDGAR_MAX_RPS = float(os.environ.get("STOCKSCAN_EDGAR_MAX_RPS", "8"))
 
+# --- price provider -----------------------------------------------------------
+# "yfinance" (free, survivorship-biased) or "tiingo" (paid, delisted-inclusive).
+PRICE_PROVIDER = os.environ.get("STOCKSCAN_PRICE_PROVIDER", "yfinance")
+TIINGO_TOKEN = os.environ.get("STOCKSCAN_TIINGO_TOKEN", "")
+
+# --- local LLM (NARRATE stage) ------------------------------------------------
+# OpenAI-compatible endpoint: Ollama (http://localhost:11434/v1) or llama.cpp/MLX server.
+LLM_BASE_URL = os.environ.get("STOCKSCAN_LLM_URL", "http://localhost:11434/v1")
+LLM_MODEL = os.environ.get("STOCKSCAN_LLM_MODEL", "qwen2.5:32b")
+
 # --- locked modeling decisions (DESIGN.md §10) --------------------------------
 LABEL_HORIZON_DAYS = 63           # forward return horizon (~3 months)
 AVAILABILITY_LAG_BDAYS = 1        # a filing's numbers are usable at filed + 1 business day

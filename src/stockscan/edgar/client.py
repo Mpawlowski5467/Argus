@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import threading
 import time
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -107,6 +108,40 @@ class EdgarClient:
 
     def get_bytes(self, url: str) -> bytes:
         return self._get(url).content
+
+    def download(self, url: str, dest: Path, skip_if_exists: bool = True) -> Path:
+        """Stream a (potentially large) file to ``dest``, atomically via a .part file."""
+        dest = Path(dest)
+        if skip_if_exists and dest.exists() and dest.stat().st_size > 0:
+            return dest
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dest.with_name(dest.name + ".part")
+        backoff = 1.0
+        last_exc: Exception | None = None
+        for _ in range(self._max_retries):
+            self._limiter.wait()
+            try:
+                with self._client.stream("GET", url) as resp:
+                    if resp.status_code != 200:
+                        if resp.status_code in (403, 429) or resp.status_code >= 500:
+                            resp.read()  # drain so the connection can be reused
+                            time.sleep(backoff)
+                            backoff = min(backoff * 2, 60.0)
+                            continue
+                        resp.raise_for_status()
+                    with open(tmp, "wb") as fh:
+                        for chunk in resp.iter_bytes(chunk_size=1 << 20):
+                            fh.write(chunk)
+                tmp.replace(dest)
+                return dest
+            except httpx.HTTPError as exc:
+                last_exc = exc
+                time.sleep(backoff)
+                backoff = min(backoff * 2, 60.0)
+        tmp.unlink(missing_ok=True)
+        if last_exc is not None:
+            raise last_exc
+        raise RuntimeError(f"EDGAR download failed after {self._max_retries} retries: {url}")
 
     # -- convenience -----------------------------------------------------------
     def company_tickers(self) -> dict:
