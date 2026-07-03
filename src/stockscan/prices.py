@@ -217,9 +217,17 @@ def _intrinio_price_rows(client, identifier: str, start, end, api_key: str) -> l
 
 
 def _intrinio_to_tidy(rows: list[dict], ticker: str) -> pd.DataFrame:
-    """Normalize Intrinio /securities/{id}/prices rows to the shared tidy schema (adjusted)."""
+    """Normalize Intrinio /securities/{id}/prices rows to the shared tidy schema.
+
+    ``open/high/low/close/volume`` stay ADJUSTED (downstream consumers unchanged);
+    ``uclose``/``uvolume`` carry the UNADJUSTED close and volume from the same
+    response — the data-layer fix for liquidity floors distorted by retroactive
+    adjustment (a heavy dividend history can push a real $30 close below the $1
+    floor years back). Files written before this column existed simply lack it;
+    readers must tolerate both schemas (union_by_name in panel.py).
+    """
     if not rows:
-        return pd.DataFrame(columns=["ticker", "date", *_COLS])
+        return pd.DataFrame(columns=["ticker", "date", *_COLS, "uclose", "uvolume"])
     df = pd.DataFrame(rows)
     out = pd.DataFrame(
         {
@@ -230,6 +238,8 @@ def _intrinio_to_tidy(rows: list[dict], ticker: str) -> pd.DataFrame:
             "low": df.get("adj_low"),
             "close": df.get("adj_close"),
             "volume": df.get("adj_volume"),
+            "uclose": df.get("close"),
+            "uvolume": df.get("volume"),
         }
     )
     return out.dropna(subset=["close"]).reset_index(drop=True)

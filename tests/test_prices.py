@@ -70,15 +70,19 @@ def test_tiingo_to_tidy_uses_adjusted_and_matches_schema():
 
 def test_intrinio_to_tidy_uses_adjusted_and_matches_schema():
     rows = [
-        {"date": "2024-01-02", "close": 1.4, "adj_open": 1.0, "adj_high": 2.0,
-         "adj_low": 0.5, "adj_close": 1.5, "adj_volume": 100},
-        {"date": "2024-01-03", "adj_open": 1.1, "adj_high": 2.1,
-         "adj_low": 0.6, "adj_close": 1.6, "adj_volume": 110},
+        {"date": "2024-01-02", "close": 1.4, "volume": 90, "adj_open": 1.0,
+         "adj_high": 2.0, "adj_low": 0.5, "adj_close": 1.5, "adj_volume": 100},
+        {"date": "2024-01-03", "close": 1.55, "volume": 95, "adj_open": 1.1,
+         "adj_high": 2.1, "adj_low": 0.6, "adj_close": 1.6, "adj_volume": 110},
     ]
     df = _intrinio_to_tidy(rows, "aapl")
-    assert list(df.columns) == ["ticker", "date", "open", "high", "low", "close", "volume"]
+    # OHLCV stay ADJUSTED (downstream unchanged); uclose/uvolume carry the raw
+    # print for the liquidity-floor fix (Phase-5 data-layer schema addition).
+    assert list(df.columns) == ["ticker", "date", "open", "high", "low", "close",
+                                "volume", "uclose", "uvolume"]
     assert (df["ticker"] == "AAPL").all()
-    assert df["close"].tolist() == [1.5, 1.6]  # adjusted close, provider-agnostic schema
+    assert df["close"].tolist() == [1.5, 1.6]        # adjusted close
+    assert df["uclose"].tolist() == [1.4, 1.55]      # unadjusted close
     assert _intrinio_to_tidy([], "x").empty
 
 

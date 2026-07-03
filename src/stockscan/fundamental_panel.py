@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import pandas as pd
 
-from .config import DELISTING_RETURN, LABEL_HORIZON_DAYS, MIN_SECTOR_BUCKET
+from .config import DELISTING_RETURN, LABEL_HORIZON_DAYS, MAX_STALE_DAYS, MIN_SECTOR_BUCKET
 from .edgar.tickers import cik_to_ticker
 from .features import FEATURES
 from .panel import forward_return_to_last, month_end_dates
@@ -44,7 +44,7 @@ def prepare_features(features_df: pd.DataFrame) -> pd.DataFrame:
     return feats[[*meta_cols, "filed_date", "available_date", "sector", *FEATURES]]
 
 
-def pit_snapshot(feats: pd.DataFrame, as_of, max_stale_days: int = 550) -> pd.DataFrame:
+def pit_snapshot(feats: pd.DataFrame, as_of, max_stale_days: int = MAX_STALE_DAYS) -> pd.DataFrame:
     """Latest filing per company that was PUBLIC at ``as_of`` and not stale.
 
     ``feats`` must come from :func:`prepare_features` (sorted by available_date).
@@ -99,7 +99,7 @@ def build_fundamental_panel(
     delistings: pd.DataFrame | None = None,
     ticker_map: dict | None = None,
     horizon: int = LABEL_HORIZON_DAYS,
-    max_stale_days: int = 550,
+    max_stale_days: int = MAX_STALE_DAYS,
     min_names: int = 30,
     reason_return: dict | None = None,
     dollar_volume: pd.DataFrame | None = None,

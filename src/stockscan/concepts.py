@@ -16,6 +16,7 @@ Coverage per concept is logged so a systematically-missing tag can't hide.
 from __future__ import annotations
 
 import glob
+from pathlib import Path
 
 import duckdb
 
@@ -100,15 +101,25 @@ def build_fundamentals_wide(out_path=None, fact_paths=None, forms=("10-K",)) -> 
     fact_paths = fact_paths or sorted(glob.glob(str(FUNDAMENTALS_DIR / "*.parquet")))
     if not fact_paths:
         return 0
-    out_path = str(out_path or WIDE_PATH).replace("'", "''")
+    import os
+
+    # WIDE_PATH is read on EVERY serve/monitor/paper pass; write to a tmp file and
+    # os.replace it in, so a crash mid-COPY can never pin a truncated parquet at the
+    # live path (it would read as corrupt forever, with no self-heal since the
+    # quarter files still look ingested). Mirrors edgar/fsds.build_fundamentals.
+    final = Path(out_path or WIDE_PATH)
+    tmp = final.with_name("." + final.name + ".tmp")
+    out_p = str(tmp).replace("'", "''")
     src = "read_parquet([" + ",".join(f"'{str(p)}'" for p in fact_paths) + "])"
     con = duckdb.connect()
     try:
-        con.execute(f"COPY ({extract_sql(src, forms)}) TO '{out_path}' "
+        con.execute(f"COPY ({extract_sql(src, forms)}) TO '{out_p}' "
                     f"(FORMAT PARQUET, COMPRESSION ZSTD)")
-        return con.execute(f"SELECT count(*) FROM read_parquet('{out_path}')").fetchone()[0]
+        rows = con.execute(f"SELECT count(*) FROM read_parquet('{out_p}')").fetchone()[0]
     finally:
         con.close()
+    os.replace(tmp, final)
+    return rows
 
 
 def coverage(wide_path=None) -> dict[str, float]:

@@ -80,6 +80,35 @@ def repair_scale_breaks(
     return close * factor, factor, n_days, n_names
 
 
+def apply_price_hygiene(
+    close: pd.DataFrame,
+    opn: pd.DataFrame | None = None,
+    trust_floor: float = 0.01,
+    repair_breaks: bool = True,
+) -> tuple[pd.DataFrame, pd.DataFrame | None, dict]:
+    """The module-doc data hygiene as one reusable step (backtest AND live compare).
+
+    Masks sub-penny quantization noise FIRST so it can't register as a scale
+    break, then repairs vendor mis-adjustments on the trusted prints. Returns
+    ``(close, opn, stats)`` with the counts that must be reported, never hidden.
+    """
+    n_masked = 0
+    if trust_floor:
+        trusted = close >= trust_floor
+        n_masked = int((close.notna() & ~trusted).to_numpy().sum())
+        close = close.where(trusted)
+        if opn is not None:
+            opn = opn.where(opn >= trust_floor)
+    n_break_days = n_break_names = 0
+    if repair_breaks:
+        close, factor, n_break_days, n_break_names = repair_scale_breaks(close)
+        if opn is not None:
+            opn = opn * factor
+    stats = {"n_subpenny_masked": n_masked, "n_break_days": n_break_days,
+             "n_break_names": n_break_names}
+    return close, opn, stats
+
+
 def tiered_bps(dv: pd.Series, tiers=COST_TIERS_BPS) -> pd.Series:
     """Map each name's dollar volume to bps via descending ``(floor, bps)`` tiers.
 
@@ -187,16 +216,10 @@ def run_backtest(
 
     # data hygiene (module doc): mask sub-penny quantization noise FIRST so it can't
     # register as scale breaks, then repair vendor mis-adjustments on trusted prints
-    n_masked = 0
-    if trust_floor:
-        trusted = close >= trust_floor
-        n_masked = int((close.notna() & ~trusted).to_numpy().sum())
-        close = close.where(trusted)
-        opn = opn.where(opn >= trust_floor)
-    n_break_days = n_break_names = 0
-    if repair_breaks:
-        close, factor, n_break_days, n_break_names = repair_scale_breaks(close)
-        opn = opn * factor
+    close, opn, hygiene = apply_price_hygiene(close, opn, trust_floor, repair_breaks)
+    n_masked = hygiene["n_subpenny_masked"]
+    n_break_days = hygiene["n_break_days"]
+    n_break_names = hygiene["n_break_names"]
     valued = close.ffill()  # a name frozen at its last (trusted) print holds that value
 
     # (signal_date, exec_position): trade at the first bar strictly AFTER the signal.

@@ -123,9 +123,12 @@ def test_cache_result_is_still_validated_output(cache):
     assert again["citations"]  # citations survive the cache round-trip
 
 
-def test_template_tier_without_llms(cache):
+def test_template_tier_is_never_cached(cache):
+    """A template run (no LLM available) must NOT enter the cache: caching it
+    would let a later --no-llm invocation overwrite a real full-tier narration
+    and, via the materiality baseline reset, serve the template forever."""
     r = narrate_smart(_packet(), cache=cache)
     assert r["tier"] == "template" and r["grounded"]
-    # a template result is cached too: unchanged packet -> cache hit
+    assert cache.get(_packet()["meta"]["cik"]) is None  # nothing cached
     r2 = narrate_smart(_packet(), cache=cache)
-    assert r2["tier"] == "cache"
+    assert r2["tier"] == "template"  # still template, not a cache hit

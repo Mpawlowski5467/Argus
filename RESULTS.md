@@ -1,3 +1,187 @@
+# Phase-5 — Continuous Operation & Paper-Forward Verdict (2026-07-02)
+
+The machinery now runs unattended: idempotent ingestion jobs, a monitoring loop
+with SQLite state, and an append-only paper-forward log against a model + thresholds
+frozen TODAY. Gate (DESIGN.md §8): live behavior broadly consistent with backtest,
+the machinery runs unattended. **GATE: PASS (operational; the live-vs-backtest
+comparison is now accruing — first genuinely OOS month is July 2026).**
+
+`uv run python scripts/ops.py {nightly|prices|fsds|universe|monitor|paper|health}`
+
+## What was built (src/stockscan/ops/ + scripts/ops.py)
+
+- **Idempotent ingestion jobs** (ops/jobs.py). Each is safe to re-run and logs a
+  deltas dict to `ops_state.job_runs`:
+  - **nightly prices** — a FULL-HISTORY refetch per ACTIVE column by security id,
+    NOT an incremental append. Adjusted series rebase retroactively on every split
+    or dividend (the vendor rescales all history), so grafting new bars onto stale
+    history would manufacture a scale break at the seam — the exact artifact class
+    Phase-3 fought. A security's history fits one API page, so a refetch costs the
+    same as an increment and heals vendor revisions for free. Idempotent via the
+    data: the reference column sets the session's target trading date, and any
+    column already at that date is skipped without a request; a shrunken vendor
+    response never replaces a fuller file (sanity guard); identical content is not
+    rewritten (no mtime churn / cache rebuild).
+  - **quarterly FSDS** — ingests any elapsed quarter missing from disk, then rebuilds
+    the wide table. A not-yet-published quarter (404, or an opaque retry error on the
+    newest quarter) is "waiting", not a failure; an OLD missing quarter is a real gap.
+    Quarter parquets are now written atomically (tmp + os.replace) and a crash-damaged
+    file counts as missing so it self-heals.
+  - **universe refresh** — re-enumerates the Intrinio security master, diffs per-CIK,
+    and applies changes in a crash-safe order: dead companies get a full multi-security
+    re-splice under their NEW column name (OTC-afterlife securities only become
+    candidates at death, so the death decline is captured, not truncated), renames
+    rewrite the parquet's INTERNAL ticker column (the matrix pivots on it) keeping the
+    fuller file on any target collision, new companies are fetched, and the universe
+    parquet is replaced LAST as the commit point. Recently-dead columns keep getting
+    refetched for a 120-day grace window (late OTC prints inside open forward windows).
+- **Matrix cache** (panel.py) — the per-column store is 11k parquets that take ~11s
+  to pivot; the nightly job persists the two wide matrices and the serve/monitor paths
+  load them in <1s. Freshness is a manifest hash over sorted (filename, size, mtime),
+  NOT bare mtime — os.replace renames preserve mtime, so an mtime check would call a
+  renamed-column cache fresh. Cached == slow-path is asserted bit-identical.
+- **Monitoring loop** (ops/monitor.py) — one pass over the watchlist: percentile-move
+  alerts (|Δpct| ≥ 10 vs the last recorded state), new-filing detection from two
+  sources (the wide table = numbers landed; EDGAR submissions = filed, numbers arrive
+  next FSDS batch — both bootstrap-seed silently on first sight), and materiality-gated
+  re-narration through the EXISTING cache (scan.py's pattern: analyze(llm=None) →
+  narrate_smart). Percentile alerts are suppressed on a degraded price night (ranks
+  over a half-updated store would fire false alerts, then fire them in reverse on
+  recovery).
+- **Paper-forward** (ops/paper.py) — the un-overfittable test, frozen TODAY:
+  - `paper freeze` writes a write-once `baseline.json` (artifact content hash,
+    trained_through, feature cols, frozen thresholds, the backtest expectations the
+    live run is judged against, the degradation rule, and the KNOWN live-vs-backtest
+    asymmetries) + the first entry in an append-only `vintages.jsonl`. Re-freezing the
+    same artifact is a no-op; a different artifact hard-errors toward retrain-record.
+  - `paper log` scores the live cross-section at the last COMPLETED month-end (the
+    backtest's monthly grid) with the frozen artifact and appends an immutable
+    `signals/<date>.jsonl` (a header with run metadata + cross-section stats + data
+    vintage, then one line per name: score, pct, decile, top-decile, book membership,
+    filing dates). Never overwrites; a re-run verifies the header hash and no-ops,
+    re-applying the recorded hysteresis-book transitions (the book is reconstructed
+    from the file, so SQLite and the append-only record cannot diverge across crashes).
+    Refuses to run if the current artifact hash ≠ the latest registered vintage.
+  - `paper compare` reads every logged month old enough to score, computes the realized
+    forward return on RAW prices with 1/99 winsorization (the exact methodology behind
+    the frozen baseline IC — see the code-review note below on why NOT scale-break
+    repair), re-keys every logged name by CIK through the CURRENT universe map (a column
+    renamed by death still resolves — the crashed names must not silently drop out), and
+    reports rank IC / decile spread / book excess vs the frozen expectation. In-sample-
+    flagged months are excluded from the gate metric.
+  - `paper retrain-record` is the MANUAL, logged retrain event: it appends a new
+    vintage. Nothing in the loop calls it; the quarterly-retrain cadence stays a human
+    decision (DESIGN §10). The monitor and health both assert the running artifact is
+    the registered vintage, so an in-place train_model.py overwrite is caught, not
+    silently served.
+- **No-retrain-in-the-loop is structural**: nothing under stockscan.ops imports fit /
+  save_artifact / LGBMRegressor — enforced by a source-scan test.
+- **Scheduling + health** — `ops.py nightly` is the single launchd entry (installed to
+  ~/Library/LaunchAgents, daily 22:45): it runs prices → FSDS-if-due → universe-if-due
+  → paper-log-if-due → monitor, each stage self-checking whether it is due, so a run
+  missed while the Mac slept simply catches up next firing. A single repo-wide flock
+  makes wake-coalesced double-fires and manual overlap harmless. `ops.py health`
+  checks price/fundamentals freshness, matrix-cache sync, artifact-vs-vintage,
+  baseline, paper cadence, job recency, and the LLM endpoint (informational — narration
+  degrades to template by design); critical failures exit non-zero.
+
+## First live run (2026-06-30 as-of, on real data)
+
+The baseline is frozen at artifact vintage **b50bc6d9** (trained through 2026-03-31).
+The first monthly log scored **2,970 liquid names** across 10 sectors, 297 top-decile,
+595 in the initial long book. It is honestly flagged **in_sample: True** — the artifact
+trained through March 2026 plus the 63-trading-day label horizon reaches the end of
+June, so June is still inside the training information window. `compare()` excludes it
+from the gate metric; the paper-forward comparison genuinely begins with the July log
+(the first fully out-of-sample month), and it refuses to judge until 3 OOS months have
+accrued. The live label is measured on RAW, unrepaired prices with 1/99 per-month
+winsorization — EXACTLY how the frozen baseline IC was computed (build_fundamental_panel
+uses load_matrices directly; winsorization, not scale-break repair, tames the artifacts
+on the label side). The delisted BBBY watchlist name flows through the monitor and is
+correctly reported as a lapsed filer (last 10-K > 550d stale), no crash.
+
+## The adjusted-price-rebase decision (why full-refetch, not append)
+
+An adversarial review of the plan BEFORE coding (3 lenses, then this same review on the
+shipped code) flagged as its top finding that a 7-day-overlap incremental merge is
+structurally wrong for back-adjusted prices: a single split or dividend rebases the
+whole vendor history, so the retained pre-overlap rows sit on the old scale and the
+seam prints a fabricated return (a 1:10 reverse split → fake +900%; every dividend →
+a small persistent bias) — and nothing on the serve/monitor/paper path repairs it. The
+shipped nightly job refetches full history per active column instead; a regression test
+simulates a rebased vendor response and asserts the healed series has no seam.
+
+## What the code review caught (fixed + regression-tested)
+
+A 3-lens adversarial review of the SHIPPED code (find → adversarially verify each
+finding; 10 agents) confirmed 7 defects, all fixed with regression tests:
+
+- **[critical] `compare()` was flattering the live track** — it applied the
+  backtest's NAV-side price hygiene to the LABEL, which masks sub-penny death
+  prints to NaN and lets `forward_return_to_last`'s ffill carry the pre-crash price
+  forward, fabricating a ~0% return for a name that actually died to zero (empirically:
+  a name crashing to sub-penny read −99.99% raw, +0.0% after hygiene). It also diverged
+  from the baseline, whose IC was measured on raw+winsorized prices. Fixed: the label
+  is now raw + 1/99 winsorization, matching the baseline exactly; a regression test
+  asserts a mid-window death keeps its ~−99% loss.
+- **[critical] `build_fundamentals_wide` wrote the read-hot serve file
+  non-atomically** — a crash mid-COPY would pin a truncated `fundamentals_wide.parquet`
+  that every serve/monitor/paper pass reads, with no self-heal (the quarter files still
+  look ingested). Fixed: tmp + os.replace, mirroring the per-quarter builder.
+- **[major] A transient failure of the price-refresh reference column stranded the
+  whole universe** — if the AAPL heartbeat fetch failed, its stale on-disk date became
+  the session target, short-circuiting all ~11k columns to "fresh" while the job
+  reported success. Fixed: the target is adopted only when the reference bar is
+  actually current; otherwise the rest is fetched normally and the run flags itself
+  degraded (`reference_ok`).
+- **[major] The nightly paper-log couldn't backfill a multi-month outage** — a Mac
+  asleep for weeks would lose the middle months permanently. Fixed:
+  `missing_paper_months` enumerates every completed month-end since the freeze with no
+  file and logs each oldest-first (log_signals is PIT at as_of, so a late run scores
+  identically); the manual `paper log` and the health check both use it.
+- **[minor] The matrix cache stopped rebuilding after a universe refresh deleted its
+  manifest** — the nightly rebuild only fired on a write, so the serve path was pinned
+  to the slow load. Fixed: rebuild whenever the cache is stale/missing, not only on a
+  write.
+- **[minor] A degraded price night suppressed alerts but not narration** — a jittered
+  cross-section could still cache a full narration against a wrong percentile and reset
+  the materiality baseline. Fixed: a degraded night forces template-only narration
+  (which never caches).
+- **[minor] A paper-log no-op was recorded as job status "ok"** rather than "noop".
+  Fixed: `_run_logged` honors a returned status.
+
+The review's top finding matched the pre-coding plan review's: an incremental
+adjusted-price merge is unsound (the full-refetch design was the right call).
+
+## Data-layer backlog (partially closed)
+
+The store now CAPTURES unadjusted close/volume (uclose/uvolume) alongside the adjusted
+OHLCV — every new fetch carries them, readers tolerate the mixed schema (union_by_name),
+and `scripts/backfill_unadjusted.py` refetches ONLY the pre-schema files, resumably
+(proven on a 3-column sample). Deferred, deliberately: the actual switch of the
+liquidity floor from adjusted to unadjusted close is a re-baseline event (it changes
+historical universe membership → panel rebuild → retrain → new artifact vintage →
+re-freeze), and it needs the full ~11k-column backfill to complete first so the universe
+is consistent. The mechanism is shipped; the migration is a logged vintage step, not a
+silent threshold change under the frozen baseline.
+
+## Deferred / accepted
+
+- The FSDS quarterly publication lag makes every live month-end miss the freshest 0-3
+  months of filings that its backtest twin had; frozen into baseline.json as a known
+  asymmetry and stamped (data_vintage) in every run header, not re-discovered as decay.
+- compare() is gross, close-to-close, cost-free — gated on the like-for-like IC/spread
+  pair; the NAV net-excess numbers are context.
+- Value features (PIT market cap), 10-Q cadence, and the distress head remain deferred
+  from earlier phases.
+- The nightly job refetches the full active universe against Intrinio every night; on a
+  metered plan this is real quota. Uninstall with `ops.py install-launchd --uninstall`.
+
+Tests: 160 green (110 Phase-4 + 50 new: ops state/jobs/paper/monitor/health, the
+matrix cache, and the template-cache and price-schema regressions).
+
+---
+
 # Phase-4 — Narration Hardening Verdict (2026-07-02)
 
 The NARRATE stage is now a constrained, validated, cached pipeline on real local

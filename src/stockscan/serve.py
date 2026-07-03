@@ -22,7 +22,13 @@ import numpy as np
 import pandas as pd
 
 from .concepts import WIDE_PATH
-from .config import LABEL_HORIZON_DAYS, MIN_DOLLAR_VOLUME, MIN_SECTOR_BUCKET
+from .config import (
+    LABEL_HORIZON_DAYS,
+    MAX_STALE_DAYS,
+    MIN_DOLLAR_VOLUME,
+    MIN_PRICE,
+    MIN_SECTOR_BUCKET,
+)
 from .edgar.tickers import cik_for
 from .features import compute_features
 from .fundamental_panel import add_sector_ranks, liquidity_mask, pit_snapshot, prepare_features
@@ -31,7 +37,7 @@ from .model import Artifact, load_artifact
 from .narrate.ground import check_grounding
 from .narrate.packet import LABELS, build_packet
 from .narrate.narrator import narrate_packet
-from .panel import load_matrices
+from .panel import load_matrices_cached
 
 
 @dataclass
@@ -47,7 +53,9 @@ class ServeData:
 def load_serve_data() -> ServeData:
     wide = duckdb.query(f"select * from read_parquet('{WIDE_PATH}')").df()
     feats = prepare_features(compute_features(wide))
-    close, dv = load_matrices()
+    # cached wide matrices when in sync with the per-column store (seconds instead
+    # of ~2 minutes — what makes a daily monitor loop viable), slow path otherwise
+    close, dv = load_matrices_cached()
     if close.empty:
         raise FileNotFoundError("no prices on disk; run scripts/fetch_intrinio_prices.py")
     tmap = universe_ticker_map()
@@ -86,9 +94,9 @@ def resolve_company(query, ticker_map: dict[int, str]) -> tuple[int, str | None]
 def build_cross_section(
     data: ServeData,
     as_of,
-    max_stale_days: int = 550,
+    max_stale_days: int = MAX_STALE_DAYS,
     min_dollar_volume: float = MIN_DOLLAR_VOLUME,
-    min_price: float = 1.0,
+    min_price: float = MIN_PRICE,
     min_sector_bucket: int = MIN_SECTOR_BUCKET,
     include_cik: int | None = None,
 ) -> pd.DataFrame:
@@ -124,7 +132,7 @@ def analyze(
     artifact: Artifact | None = None,
     llm=None,
     min_dollar_volume: float = MIN_DOLLAR_VOLUME,
-    max_stale_days: int = 550,
+    max_stale_days: int = MAX_STALE_DAYS,
 ) -> dict:
     """End-to-end per-ticker analysis at ``as_of`` (default: latest price date).
 

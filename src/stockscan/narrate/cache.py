@@ -54,7 +54,10 @@ def _top_drivers(packet: dict, k: int = 3) -> list[str]:
 class NarrationCache:
     def __init__(self, path: Path = CACHE_PATH):
         self.path = Path(path)
-        self._db = sqlite3.connect(str(self.path))
+        # WAL + a generous busy timeout: the nightly monitor holds this DB for
+        # minutes (LLM latency) while a manual analyze/scan may write concurrently.
+        self._db = sqlite3.connect(str(self.path), timeout=30.0)
+        self._db.execute("pragma journal_mode=wal")
         self._db.execute(
             """create table if not exists narrations (
                 cik integer primary key,
@@ -159,7 +162,11 @@ def narrate_smart(
     result["tier"] = "template" if llm is None else \
         ("light" if llm is llm_light and change == "minor" else "full")
     result["materiality"] = change
-    if cache is not None:
+    # A template run must never enter the cache: a no-LLM invocation (scheduled
+    # monitor with --no-llm, LLM endpoint down) would otherwise overwrite a cached
+    # full-tier narration AND reset the materiality baseline, after which the next
+    # LLM-enabled run can classify "unchanged" and serve the template forever.
+    if cache is not None and result["tier"] != "template":
         # only a full-quality narration resets the materiality baseline
         cache.put(cik, packet, result, model_tag=result["tier"],
                   baseline=result["tier"] != "light")

@@ -69,6 +69,8 @@ FEATURE_COVERAGE_FLOOR = 0.70     # drop / bucket-fallback any feature below thi
 # tradable universe floors
 MIN_MARKET_CAP = 100_000_000      # $100M
 MIN_DOLLAR_VOLUME = 1_000_000     # $1M 20-day median dollar volume
+MIN_PRICE = 1.0                   # $1 price floor (currently on ADJUSTED close — known bias)
+MAX_STALE_DAYS = 550              # a 10-K older than this can't represent the company
 
 # delisting-return convention — labeled ESTIMATES; the sweep is a Phase-1 gate
 DELISTING_RETURN = {
@@ -106,3 +108,17 @@ SHORT_MIN_ADV = 5_000_000
 # stay until falling out of the top (bottom) 40% — cuts turnover vs a hard decile.
 HYSTERESIS_ENTER = 0.20
 HYSTERESIS_EXIT = 0.40
+
+# --- continuous operation (Phase 5, DESIGN.md §8) -------------------------------
+OPS_STATE_PATH = ARTIFACTS_DIR / "ops_state.sqlite"   # mutable ops state (SQLite)
+PAPER_DIR = ARTIFACTS_DIR / "paper_forward"           # append-only paper-forward store
+LOGS_DIR = DATA_DIR / "logs"                          # launchd job stdout/stderr
+MATRIX_CACHE_DIR = PARQUET_DIR / "matrix_cache"       # wide close/dv matrices (fast load)
+# Alert when a watchlist name's model percentile moves at least this much between
+# monitor runs (same threshold the narration cache treats as material).
+MONITOR_PCTILE_ALERT = 10
+# Health: prices are stale after this many calendar days without a new bar
+# (covers weekends + market holidays), fundamentals after a quarter end goes
+# unanswered this long (FSDS publishes in the weeks after quarter end).
+HEALTH_PRICE_STALE_DAYS = 6
+HEALTH_FSDS_GRACE_DAYS = 100
