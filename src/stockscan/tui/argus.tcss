@@ -45,3 +45,20 @@ ScanView, WatchView, PaperView, TickerView {
     height: 4;
     margin-top: 1;
 }
+
+#search {
+    margin-bottom: 1;
+}
+
+HelpScreen {
+    align: center middle;
+}
+
+#help-box {
+    width: auto;
+    max-width: 74;
+    height: auto;
+    padding: 1 2;
+    border: round $accent;
+    background: $panel;
+}

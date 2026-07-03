@@ -42,6 +42,20 @@ def scan_rows(cross: pd.DataFrame, sector: str | None = None) -> list[dict]:
     return rows
 
 
+def search_rows(cross: pd.DataFrame, query: str, limit: int = 40) -> list[dict]:
+    """Scan rows filtered to names whose ticker OR company-name contains ``query``.
+
+    Case-insensitive substring, ranked by score like the scan (best first). Empty
+    query returns the full ranked scan (capped)."""
+    q = str(query or "").strip()
+    if not q:
+        return scan_rows(cross)[:limit]
+    qu = q.upper()
+    tick = cross["ticker"].astype(str).str.upper().str.contains(qu, regex=False, na=False)
+    name = cross["name"].astype(str).str.upper().str.contains(qu, regex=False, na=False)
+    return scan_rows(cross[tick | name])[:limit]
+
+
 def sectors_in(cross: pd.DataFrame) -> list[str]:
     return ["all", *sorted(cross["sector"].dropna().unique())]
 
@@ -129,6 +143,112 @@ class ArgusData:
 
     def scan(self, sector: str | None = None) -> list[dict]:
         return scan_rows(self._cross, sector)
+
+    def search(self, query: str, limit: int = 40) -> list[dict]:
+        return search_rows(self._cross, query, limit)
+
+    def resolve(self, query) -> dict | None:
+        """Resolve any ticker / TICKER~CIK / CIK to a cik (survivorship-safe). None if unknown."""
+        from ..serve import resolve_company
+
+        try:
+            cik, column = resolve_company(query, self.data.ticker_map)
+        except Exception:
+            return None
+        return {"cik": int(cik), "column": column}
+
+    def price(self, cik: int) -> dict | None:
+        """Close series + summary (last/changes/52wk/ADV) for a name, from the loaded matrices."""
+        from .chart import price_summary
+
+        column = self.data.ticker_map.get(int(cik))
+        if not column or column not in self.data.close.columns:
+            return None
+        series = self.data.close[column].dropna()
+        adv = None
+        if column in self.data.dv_med.columns:
+            dvs = self.data.dv_med[column].dropna()
+            adv = float(dvs.iloc[-1]) if len(dvs) else None
+        return {"column": column, "series": series, "summary": price_summary(series, adv)}
+
+    def events(self, cik: int, limit: int = 8) -> list[dict]:
+        """Recent newsworthy EDGAR filings (network; call from a worker)."""
+        from ..news import recent_filings
+
+        return recent_filings(int(cik), limit=limit)
+
+    def ohlc(self, cik: int, tail: int = 252):
+        """Adjusted OHLCV rows for a name from the per-column price store (local, no quota)."""
+        import pandas as pd
+
+        from ..prices import PRICES_DIR
+
+        column = self.data.ticker_map.get(int(cik))
+        if not column:
+            return None
+        p = PRICES_DIR / f"{column}.parquet"
+        if not p.exists():
+            return None
+        cols = ["date", "open", "high", "low", "close", "volume"]
+        df = pd.read_parquet(p, columns=cols).dropna(subset=["close"]).sort_values("date")
+        return df.tail(tail).reset_index(drop=True)
+
+    def _universe(self):
+        uni = self.__dict__.get("_uni")
+        if uni is None:
+            from ..intrinio_universe import load_universe
+            uni = self.__dict__["_uni"] = load_universe()
+        return uni
+
+    def _pick(self, cik: int, field: str):
+        u = self._universe()
+        r = u[u["cik"] == int(cik)]
+        if r.empty:
+            return None
+        return str(r.sort_values("priority").iloc[0][field])
+
+    def news(self, cik: int, limit: int = 6) -> list[dict]:
+        """Recent press headlines (Intrinio). Session-cached per cik to spare quota."""
+        cache = self.__dict__.setdefault("_news_cache", {})
+        if cik in cache:
+            return cache[cik]
+        from ..news import company_news
+
+        tk = self._pick(cik, "ticker")
+        res = company_news(tk, limit=limit) if tk else []
+        cache[cik] = res
+        return res
+
+    def live_quote(self, cik: int, refresh: bool = False) -> dict | None:
+        """Latest live/intraday quote (Intrinio). Session-cached unless refresh=True."""
+        cache = self.__dict__.setdefault("_quote_cache", {})
+        if not refresh and cik in cache:
+            return cache[cik]
+        from ..quote import realtime_price
+
+        sid = self._pick(cik, "security_id")
+        res = realtime_price(sid) if sid else None
+        cache[cik] = res
+        return res
+
+    # -- watchlist (the only writes — sanctioned per the read-mostly design) ---------
+    def is_watched(self, cik: int) -> bool:
+        from ..ops.state import OpsState
+
+        with OpsState() as st:
+            return any(int(w["cik"]) == int(cik) for w in st.watchlist())
+
+    def toggle_watch(self, cik: int) -> bool:
+        """Add/remove the name from the watchlist. Returns the new watched state."""
+        from ..ops.state import OpsState
+
+        with OpsState() as st:
+            watched = any(int(w["cik"]) == int(cik) for w in st.watchlist())
+            if watched:
+                st.watch_remove(int(cik))
+                return False
+            st.watch_add(int(cik), self.data.ticker_map.get(int(cik)))
+            return True
 
     def ticker(self, query, as_of=None) -> dict:
         """Full per-name analysis (deterministic; template narration included)."""

@@ -1,0 +1,133 @@
+"""The events feed: recent SEC EDGAR filings for a company.
+
+For a fundamentals-driven scanner the most honest, point-in-time "news" is the
+company's own filing stream — an 8-K *is* a material-event press release, a 10-K/Q
+is the numbers landing. It is free, timestamped, survivorship-safe, and already the
+spine of this project (the monitor watches the same submissions feed). A paid
+headline/press feed can layer on top later; this needs no new provider.
+
+``shape_filings`` (pure, testable) turns EDGAR's parallel-array ``recent`` block into
+labelled rows; ``recent_filings`` does the throttled fetch.
+"""
+
+from __future__ import annotations
+
+from urllib.parse import urlparse
+
+import httpx
+
+from .config import INTRINIO_API_KEY
+from .edgar.client import EdgarClient
+from .prices import intrinio_get_json
+
+_INTRINIO_BASE = "https://api-v2.intrinio.com"
+
+FORM_LABELS = {
+    "8-K": "material event",
+    "8-K/A": "material event (amended)",
+    "10-K": "annual report",
+    "10-K/A": "annual report (amended)",
+    "10-Q": "quarterly report",
+    "10-Q/A": "quarterly report (amended)",
+    "DEF 14A": "proxy statement",
+    "DEFA14A": "proxy solicitation",
+    "SC 13D": "activist stake (13D)",
+    "SC 13D/A": "activist stake (amended)",
+    "SC 13G": "passive stake (13G)",
+    "SC 13G/A": "passive stake (amended)",
+    "425": "merger communication",
+    "S-1": "securities registration",
+    "S-1/A": "securities registration (amended)",
+    "25-NSE": "delisting notice",
+    "15-12B": "deregistration",
+    "15-12G": "deregistration",
+}
+
+# Newsworthy forms — the material-event + periodic + ownership/M&A set. Deliberately
+# excludes the high-frequency low-signal noise (Form 3/4/5 insider filings) so the
+# panel reads like a headline stream, not a filing dump.
+NEWSWORTHY = frozenset({
+    "8-K", "8-K/A", "10-K", "10-K/A", "10-Q", "10-Q/A", "DEF 14A", "DEFA14A",
+    "SC 13D", "SC 13D/A", "SC 13G", "SC 13G/A", "425", "S-1", "S-1/A",
+    "25-NSE", "15-12B", "15-12G",
+})
+
+
+def shape_filings(recent: dict, limit: int = 8, forms=NEWSWORTHY) -> list[dict]:
+    """EDGAR's ``filings.recent`` (parallel arrays) → newest-first labelled rows."""
+    keep = set(forms) if forms else None
+    rows = []
+    for form, filed, period in zip(
+        recent.get("form", []), recent.get("filingDate", []), recent.get("reportDate", [])
+    ):
+        if keep is not None and form not in keep:
+            continue
+        rows.append({
+            "form": form,
+            "filed_date": filed or "",
+            "period_end": period or "",
+            "label": FORM_LABELS.get(form, form),
+        })
+    rows.sort(key=lambda r: r["filed_date"], reverse=True)
+    return rows[:limit]
+
+
+def _source(url: str) -> str:
+    """Publisher host from an article URL, e.g. 'www.reuters.com' -> 'reuters.com'."""
+    try:
+        host = urlparse(url).netloc.lower()
+    except Exception:
+        return ""
+    return host[4:] if host.startswith("www.") else host
+
+
+def shape_article(a: dict) -> dict:
+    """One Intrinio news article -> the fields the view needs."""
+    url = a.get("url") or ""
+    return {
+        "title": " ".join((a.get("title") or "").split()),
+        "date": (a.get("publication_date") or "")[:10],
+        "url": url,
+        "source": _source(url),
+    }
+
+
+def company_news(ticker: str, limit: int = 6, api_key: str | None = None,
+                 client: httpx.Client | None = None) -> list[dict]:
+    """Recent press headlines for a ticker (Intrinio). [] on missing key or any error.
+
+    Live-view only — never used for scoring/backtest (no point-in-time guarantee)."""
+    api_key = api_key or INTRINIO_API_KEY
+    if not api_key or not ticker:
+        return []
+    own = client is None
+    client = client or httpx.Client(base_url=_INTRINIO_BASE, timeout=20.0)
+    try:
+        try:
+            d = intrinio_get_json(
+                client, f"/companies/{ticker}/news", {"api_key": api_key, "page_size": limit})
+        except Exception:
+            return []
+        arts = (d or {}).get("news", []) or []
+        return [shape_article(a) for a in arts[:limit]]
+    finally:
+        if own:
+            client.close()
+
+
+def recent_filings(cik: int, limit: int = 8, client: EdgarClient | None = None,
+                   forms=NEWSWORTHY) -> list[dict]:
+    """Recent newsworthy EDGAR filings for a CIK. [] on any fetch error (never raises)."""
+    own = client is None
+    client = client or EdgarClient()
+    try:
+        try:
+            data = client.get_json(
+                f"{client.DATA_HOST}/submissions/CIK{int(cik):010d}.json")
+        except Exception:
+            return []
+        recent = (data or {}).get("filings", {}).get("recent", {})
+        return shape_filings(recent, limit=limit, forms=forms)
+    finally:
+        if own:
+            client.close()
