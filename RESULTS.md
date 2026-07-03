@@ -155,15 +155,17 @@ adjusted-price merge is unsound (the full-refetch design was the right call).
 
 ## Data-layer backlog (partially closed)
 
-The store now CAPTURES unadjusted close/volume (uclose/uvolume) alongside the adjusted
-OHLCV — every new fetch carries them, readers tolerate the mixed schema (union_by_name),
-and `scripts/backfill_unadjusted.py` refetches ONLY the pre-schema files, resumably
-(proven on a 3-column sample). Deferred, deliberately: the actual switch of the
-liquidity floor from adjusted to unadjusted close is a re-baseline event (it changes
-historical universe membership → panel rebuild → retrain → new artifact vintage →
-re-freeze), and it needs the full ~11k-column backfill to complete first so the universe
-is consistent. The mechanism is shipped; the migration is a logged vintage step, not a
-silent threshold change under the frozen baseline.
+The store CAPTURES unadjusted close/volume (uclose/uvolume) alongside the adjusted
+OHLCV — every fetch carries them, readers tolerate the mixed schema (union_by_name),
+and `scripts/backfill_unadjusted.py` refetches ONLY the pre-schema files, resumably.
+The full backfill is now **COMPLETE (2026-07-02)**: all 11,029 price columns carry
+populated uclose/uvolume (audited: 0 missing, 0 all-null; 1 single-row name lacks
+uvolume), and the wide matrix cache was rebuilt on top of it. Still deferred,
+deliberately: the actual switch of the liquidity floor from adjusted to unadjusted close
+is a re-baseline event (it changes historical universe membership → panel rebuild →
+retrain → new artifact vintage → re-freeze). The raw data is now available store-wide;
+the migration remains a logged vintage step — a human decision — not a silent threshold
+change under the frozen baseline.
 
 ## Deferred / accepted
 

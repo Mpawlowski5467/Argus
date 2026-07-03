@@ -1,5 +1,10 @@
 # Survivorship-Free Data Options (research, mid-2026)
 
+> **OUTCOME (2026-07-01):** we went with **Intrinio** (the user's trial) — survivorship
+> closed for real (7,003 dead + 4,132 active companies priced by security id), and the
+> Phase-1 verdict was recomputed on it (see [RESULTS.md](RESULTS.md)). The ranking below is
+> the pre-decision research, kept as the rationale of record — not current guidance.
+
 Goal: replace free yfinance prices (which drop delisted names) so the Phase-1 IC becomes
 trustworthy. **We already have clean point-in-time fundamentals (SEC EDGAR, segments-filtered)**,
 so the thing we most need to buy is **survivorship-free PRICES** (delisted names' price history).

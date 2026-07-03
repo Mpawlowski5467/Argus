@@ -1,7 +1,7 @@
 [project]
 name = "stock-analysis"
 version = "0.0.1"
-description = "Quantitative equity scanner: parse -> compute (ML) -> narrate. See DESIGN.md."
+description = "Argus — a survivorship-free, point-in-time quantitative equity scanner: parse -> compute (ML) -> narrate. See README.md."
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
