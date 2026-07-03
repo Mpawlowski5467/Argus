@@ -3,7 +3,9 @@ ingest quota cache. All offline — the LLM and the Intrinio fetch are mocked.""
 
 import json
 
-from stockscan.newsmem.curate import credibility, curate, dedup_key, is_good
+import pandas as pd
+
+from stockscan.newsmem.curate import credibility, curate, dedup_key
 from stockscan.newsmem.extract import (
     extract_article,
     heuristic_extraction,
@@ -212,6 +214,58 @@ def test_ingest_upgrades_heuristic_placeholder_to_llm(tmp_path, monkeypatch):
         assert d["extracted"] == 1
         up = st.get_extraction("u1")
         assert up["model"] != "heuristic" and up["takeaway"] == "a large acquisition"
+
+
+# --- backfill (historical seeding) -----------------------------------------------
+
+def test_backfill_paginates_and_is_idempotent(tmp_path, monkeypatch):
+    """Backfill pulls multiple pages of history, then a re-run adds nothing new."""
+    from stockscan.newsmem.ingest import backfill_company_news
+
+    def fake_pages(ticker, pages=5, page_size=100, api_key=None, client=None):
+        # two pages' worth of older articles (dedup by id already handled upstream)
+        return [_article(f"h{i}", f"Acme historical event {i}",
+                         date=f"2026-0{1 + i // 3}-0{1 + i % 3}T00:00:00Z") for i in range(6)]
+
+    monkeypatch.setattr("stockscan.newsmem.ingest.company_news_pages", fake_pages)
+    with NewsStore(tmp_path / "news.sqlite") as st:
+        d1 = backfill_company_news(1, "ACME", st, llm=None, pages=2)
+        assert d1["fetched"] == 6 and d1["new"] == 6 and d1["extracted"] == 6
+        d2 = backfill_company_news(1, "ACME", st, llm=None, pages=2)  # idempotent
+        assert d2["new"] == 0 and d2["extracted"] == 0
+        assert len(st._articles_for(1)) == 6
+
+
+# --- watchlist job orchestration -------------------------------------------------
+
+def test_watchlist_targets_maps_ciks_to_top_priority_ticker():
+    from stockscan.newsmem.ingest import watchlist_targets
+
+    universe = pd.DataFrame([
+        {"cik": 1, "ticker": "ACME", "priority": 0},
+        {"cik": 1, "ticker": "ACME.OLD", "priority": 1},   # lower priority alias
+        {"cik": 2, "ticker": "BETA", "priority": 0},
+    ])
+    targets = dict(watchlist_targets([{"cik": 1}, {"cik": 2}, {"cik": 99}], universe))
+    assert targets[1] == "ACME"       # top-priority row wins
+    assert targets[2] == "BETA"
+    assert targets[99] is None        # watched but not in the universe -> no ticker
+
+
+def test_ingest_watchlist_job_flow(tmp_path, monkeypatch):
+    """The nightly job's core: watchlist -> targets -> ingest, aggregated + idempotent."""
+    from stockscan.newsmem.ingest import ingest_watchlist, watchlist_targets
+
+    monkeypatch.setattr("stockscan.newsmem.ingest.company_news",
+                        lambda ticker, limit=12, client=None: [_article(f"{ticker}1", f"{ticker} news")])
+    universe = pd.DataFrame([{"cik": 1, "ticker": "ACME", "priority": 0},
+                             {"cik": 2, "ticker": "BETA", "priority": 0}])
+    targets = watchlist_targets([{"cik": 1}, {"cik": 2}], universe)
+    with NewsStore(tmp_path / "news.sqlite") as st:
+        d1 = ingest_watchlist(st, targets, llm=None)
+        assert d1["companies"] == 2 and d1["new"] == 2 and d1["extracted"] == 2
+        d2 = ingest_watchlist(st, targets, llm=None)              # within refetch window
+        assert d2["new"] == 0 and d2["skipped_fetch"] == 2
 
 
 def test_recall_feeds_grounded_number_free_packet(tmp_path):

@@ -125,6 +125,46 @@ def company_news(ticker: str, limit: int = 6, api_key: str | None = None,
             client.close()
 
 
+def company_news_pages(ticker: str, pages: int = 5, page_size: int = 100,
+                       api_key: str | None = None,
+                       client: httpx.Client | None = None) -> list[dict]:
+    """Paginate a ticker's news back in time (Intrinio ``next_page``) to SEED the memory.
+
+    Returns shaped articles across up to ``pages`` pages (deduped by id), oldest pull
+    bounded by ``pages * page_size``. Stops early when the feed runs out (no next_page).
+    [] on missing key or any error. Live-view only — never used for scoring/backtest."""
+    api_key = api_key or INTRINIO_API_KEY
+    if not api_key or not ticker:
+        return []
+    own = client is None
+    client = client or httpx.Client(base_url=_INTRINIO_BASE, timeout=20.0)
+    out: list[dict] = []
+    seen: set[str] = set()
+    token: str | None = None
+    try:
+        for _ in range(max(1, pages)):
+            params = {"api_key": api_key, "page_size": page_size}
+            if token:
+                params["next_page"] = token
+            try:
+                d = intrinio_get_json(client, f"/companies/{ticker}/news", params)
+            except Exception:
+                break
+            arts = (d or {}).get("news", []) or []
+            for a in arts:
+                shaped = shape_article(a)
+                if shaped["id"] and shaped["id"] not in seen:
+                    seen.add(shaped["id"])
+                    out.append(shaped)
+            token = (d or {}).get("next_page")
+            if not arts or not token:
+                break
+        return out
+    finally:
+        if own:
+            client.close()
+
+
 def recent_filings(cik: int, limit: int = 8, client: EdgarClient | None = None,
                    forms=NEWSWORTHY) -> list[dict]:
     """Recent newsworthy EDGAR filings for a CIK. [] on any fetch error (never raises)."""
