@@ -1,10 +1,10 @@
-```
-▄▀█ █▀█ █▀▀ █░█ █▀   <(◉)>
-█▀█ █▀▄ █▄█ █▄█ ▄█
-survivorship-free · point-in-time · honest by construction
-```
+<p align="center">
+  <img src="assets/argus-logo.png" alt="Argus — the hundred-eyed watcher" width="360">
+</p>
 
-# Argus
+<h1 align="center">Argus</h1>
+
+<p align="center"><em>survivorship-free · point-in-time · honest by construction</em></p>
 
 **Argus** is a survivorship-free, point-in-time **quantitative equity scanner** for US
 stocks: parse SEC EDGAR filings → compute fundamental signals + a walk-forward ML
