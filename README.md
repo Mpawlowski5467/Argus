@@ -1,3 +1,9 @@
+```
+▄▀█ █▀█ █▀▀ █░█ █▀   <(◉)>
+█▀█ █▀▄ █▄█ █▄█ ▄█
+survivorship-free · point-in-time · honest by construction
+```
+
 # Argus
 
 **Argus** is a survivorship-free, point-in-time **quantitative equity scanner** for US
@@ -11,17 +17,68 @@ terminal UI (`scripts/argus.py`) is a read-mostly, four-view viewer over the sam
 **Guiding rule:** every deterministic, auditable number comes from code; the LLM only
 writes prose over numbers that already exist. It invents nothing and never sets the verdict.
 
+## How it works
+
+The scan pipeline is three stages — **parse → compute → narrate** — with a backtestable
+verdict at the end. Deterministic numbers flow left to right; the LLM only ever reads the
+finished packet.
+
+```mermaid
+flowchart LR
+    subgraph parse
+        E["SEC EDGAR<br/>FSDS filings"]
+        I["Intrinio<br/>survivorship-free prices<br/>(active + dead, by security id)"]
+    end
+    subgraph compute
+        C["concepts<br/>PIT fundamentals"]
+        F["features<br/>10 ratios"]
+        P["panel<br/>monthly · sector-ranked<br/>PIT universe + liquidity floor"]
+        M["LightGBM<br/>purged walk-forward (OOS)"]
+        S["signal<br/>percentile · decile · hysteresis book"]
+    end
+    subgraph narrate
+        SH["SHAP drivers<br/>(exact pred_contrib)"]
+        L["local LLM<br/>cited-JSON + grounding guard"]
+    end
+    V[["buy / sell verdict"]]
+
+    E --> C --> F --> P --> M --> S --> V
+    I --> P
+    M --> SH --> L
+    S --> L --> V
+```
+
+The whole thing then runs **unattended** (Phase 5): a nightly `launchd` job ingests, keeps
+the caches fresh, monitors a watchlist, and appends a paper-forward record scored against a
+model + thresholds frozen at a registered vintage — the un-overfittable, out-of-sample test.
+
+```mermaid
+flowchart TD
+    CRON["launchd nightly · 22:45"] --> DISP{"ops.py nightly<br/>single dispatcher (flock-guarded)"}
+    DISP --> PR["prices<br/>full-history refetch by security id"]
+    DISP --> FS["FSDS ingest<br/>if a quarter is due"]
+    DISP --> UNI["universe refresh<br/>if a month is due"]
+    PR --> MC[("wide matrix cache")]
+    FS --> WT[("fundamentals-wide table")]
+    UNI --> WT
+    MC --> MON["monitor<br/>pctile alerts · new filings · re-narrate (materiality-gated)"]
+    WT --> MON
+    DISP --> PA["paper-forward log<br/>score live cross-section vs frozen vintage"]
+    PA --> CMP["compare<br/>live IC / spread vs backtest expectation"]
+    DISP --> H{{"health check<br/>(non-zero exit on critical)"}}
+```
+
+Full per-phase verdicts, tables, and honest caveats are in [RESULTS.md](RESULTS.md).
+
 ## Status
 
 All five build phases are complete and each passed its go/no-go gate. The machinery now runs
-unattended: a nightly launchd dispatcher does ingestion → a monitoring loop → an append-only
-paper-forward log scored against a model + thresholds frozen at a registered vintage.
+unattended per the second diagram above.
 
 **Verdict (Phase-1 on survivorship-free data): _conditional GO_** — a modest, real edge
 (walk-forward OOS rank IC **+0.0375**, t 5.6; long-only **+1.48%/yr** net over the
 equal-weight universe, survives 2× costs), at the low end of the realistic 0.02–0.05 band —
-research-grade validation, not a production-alpha claim. Full per-phase verdicts, tables, and
-honest caveats are in [RESULTS.md](RESULTS.md).
+research-grade validation, not a production-alpha claim.
 
 ## Setup
 
