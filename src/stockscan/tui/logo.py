@@ -1,8 +1,8 @@
 """argus wordmark + the all-seeing-eye glyph (terminal splash + status mark)."""
 
-GLYPH = "◉"  # the iris — the watching eye, used in the status bar
+GLYPH = "<(◉)>"  # the all-seeing eye — the watching mark, used in the status bar
 
-BANNER = r"""   ▄▀█ █▀█ █▀▀ █░█ █▀    ◉
+BANNER = r"""   ▄▀█ █▀█ █▀▀ █░█ █▀   <(◉)>
    █▀█ █▀▄ █▄█ █▄█ ▄█"""
 
 TAGLINE = "survivorship-free · point-in-time · honest by construction"
