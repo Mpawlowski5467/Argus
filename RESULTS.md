@@ -1,3 +1,55 @@
+# Momentum Feature Test — Real but Non-Additive (2026-07-03)
+
+Tested whether adding price momentum (12-1 and 6-1) to the fundamentals-only model
+improves the honest out-of-sample edge. DESIGN.md §4 lists momentum in the intended
+feature set, but it was never wired past the Phase-0 leakage toy. **Verdict: momentum
+is a real, orthogonal, PIT-clean standalone signal, but it does NOT improve the model
+— do NOT promote.** Same outcome as the 13-config feature salvage, for the same
+disciplined reason: it fails the model-level OOS/CPCV bar even though it looks good in
+isolation.
+
+`uv run python scripts/run_momentum_test.py` (no-impute, 450,586 rows, 182 dates,
+~2,475 names/date). Both arms scored on the SAME panel — momentum never filters rows,
+so the only thing that varies is the feature set.
+
+## Momentum clears every DATA bar
+
+| check | result |
+|---|---|
+| coverage (12-1 / 6-1) | 95% / 98% of labeled rows (floor is 70%) |
+| orthogonality to fundamentals | mean \|corr\| **0.046**, max 0.085 — genuinely independent |
+| standalone rank IC (12-1) | **+0.0257** (t_nw +2.26) — on par with leverage/accruals |
+| standalone rank IC (6-1) | +0.0194 (t_nw +2.05) |
+
+## …but fails the MODEL-level bar (the one that counts)
+
+| feature set | WF IC | t_nw | decile spread | CPCV mean | CPCV 5th-pct |
+|---|---|---|---|---|---|
+| **baseline (10 fundamentals)** | **+0.0391** | **+5.92** | +0.0229 | **+0.0369** | +0.0134 |
+| + mom12 | +0.0382 | +5.37 | +0.0243 | +0.0355 | +0.0161 |
+| + mom12 + mom6 | +0.0372 | +4.83 | +0.0240 | +0.0371 | +0.0172 |
+
+Adding momentum moves the headline metrics by ±0.001–0.002 (**within CPCV noise**) and
+the primary walk-forward IC/t *regresses*. A new data dependency + serve-parity surface
+for zero demonstrable gain fails parsimony. Likely cause: the fundamentals model is
+already strong (IC ~0.039) and momentum's edge is regime-dependent (momentum crashes),
+so pooled across 182 months it adds ~as much variance as signal in the OOS folds.
+
+## What was kept (default-off, so the frozen model/serve/paper-forward are untouched)
+
+- `panel.momentum_6_1()` beside the existing `momentum_12_1()`.
+- Price features threaded through the parity seam in `fundamental_panel.py`
+  (`PRICE_FEATURES`, `price_feature_matrices`, `attach_price_features`,
+  `add_sector_ranks(..., features=...)`), gated behind `build_fundamental_panel(price_features=False)`.
+- `scripts/run_momentum_test.py` (WF + CPCV head-to-head harness) and
+  `tests/test_momentum_features.py` (PIT / parity / NaN-safety). 203 tests green.
+
+This infra makes the **next** price feature (short-term reversal, low-vol/beta, Amihud
+illiquidity) nearly free to test on the same honest bar. None of it changes the shipped
+model: `price_features` defaults to False everywhere.
+
+---
+
 # News Memory & News-Aware Narration Verdict (2026-07-03)
 
 Narration can now "bring up the past" — reference recent and historically-material news
