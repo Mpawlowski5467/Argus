@@ -1,3 +1,153 @@
+# Reversal / Low-Vol / Illiquidity Test — All Three Fail; st_rev's Marginal Bar-Pass Dies at the Matched Horizon (2026-07-03)
+
+Direct follow-up to the momentum test (real standalone signal but **non-additive** — did
+not beat the fundamentals-only model under walk-forward + CPCV, so it was NOT promoted;
+see the `momentum-non-additive` memory / `feature/momentum-factor`). Same honest harness,
+three new Tier-0 **price** features attached to the SAME 450k-row panel (they never filter
+rows, so every arm scores the identical cross-section — only the feature set changes):
+short-term reversal (`st_rev`, raw trailing 21d return), low-vol (`low_vol`, −126d realized
+vol), Amihud illiquidity (`amihud`, trailing |ret|/dollar-volume).
+
+**Verdict: do NOT promote any of them.** `low_vol`, `amihud`, and `+all3` fail outright at the
+model level. `st_rev` nominally meets the letter of the bar at the shipped 63d horizon (beats
+baseline on WF IC/t AND CPCV mean at every seed, tail intact) and its 63d walk-forward lift is
+even block-bootstrap-significant — **but the follow-up matched-horizon test (Path 2, below) kills
+it**: at the reversal's native ~1-month horizon st_rev is dead (WF Δ +0.0007, bootstrap CI crosses
+zero, CPCV Δ ≈ 0). The 63d bump is horizon-fragile, interaction-driven, and one-of-five features
+tried — an artifact, not a reversal edge. Per protocol I STOPPED before touching serve/retraining.
+The shipped model, serve path, and paper-forward book are byte-identical (`price_features=False`).
+
+`uv run python scripts/run_reversal_test.py` (no-impute, 450,586 rows, 182 dates, ~2,475
+names/date). rank_ic is SIGNED, so standalone ICs are reported with their real sign.
+
+## The three candidates on the DATA bars
+
+| feature | coverage | orthogonality (mean \|corr\| to fundamentals) | standalone signed IC (t_nw) |
+|---|---|---|---|
+| `st_rev`  | 100% | **0.014** (orthogonal) | **+0.0060 (t +0.95)** — expected −; the 21d reversal is *washed out* at the 63d label |
+| `low_vol` | 85%  | 0.233 (overlaps quality) | +0.0665 (t +3.02) |
+| `amihud`  | 100% | 0.181 (overlaps size/quality) | −0.0615 (t −5.22) — sign flips vs textbook inside a liquidity-floored universe |
+
+The honest caveat held: short-term reversal is a ~1-month effect, and against the 63-day
+label its standalone IC is ~0 and **insignificant**. low_vol and amihud have strong (signed)
+standalone ICs but are *not* orthogonal — they lean on the same quality/size axis the
+fundamentals already price.
+
+## …and at the MODEL level (walk-forward + CPCV — the bar that counts)
+
+| feature set | WF IC | t_nw | decile | CPCV mean | CPCV 5th-pct | frac>0 |
+|---|---|---|---|---|---|---|
+| **baseline (10 fundamentals)** | **+0.0391** | **+5.92** | +0.0229 | **+0.0369** | +0.0134 | 100% |
+| + st_rev  | +0.0419 | +6.38 | +0.0246 | +0.0390 | +0.0147 | 100% |
+| + low_vol | +0.0414 | +5.31 | +0.0258 | **+0.0238** | **−0.0279** | **84%** |
+| + amihud  | +0.0418 | +6.31 | +0.0261 | +0.0372 | +0.0107 | 100% |
+| + all3    | +0.0421 | +5.68 | +0.0276 | **+0.0251** | **−0.0255** | **87%** |
+
+- **low_vol** and **+all3** COLLAPSE under CPCV — mean craters to ~+0.024, the 5th-pct goes
+  **negative**, frac>0 drops to ~85%. A walk-forward "win" that dies under CPCV: exactly the
+  failure mode the bar exists to catch. Do NOT promote.
+- **amihud** looks good on walk-forward but its CPCV mean barely moves (+0.0372 vs +0.0369,
+  Δ ≈ 0) and its 5th-pct is *worse* than baseline (+0.0107 vs +0.0134). Paired per-combo it is
+  a wash/negative (Δmean −0.0009, only 51% of combos improve, paired t −1.17). Fails the
+  CPCV-mean half of the bar. Do NOT promote.
+- **st_rev** beats baseline on WF IC/t AND CPCV mean — the only feature that does.
+
+## st_rev robustness — the one that clears the bar (thin, but seed-robust)
+
+Because meeting the bar means STOP-and-report, a +0.002 CPCV delta was not taken at face
+value. Two checks (LightGBM bagging is seeded, and CPCV combos are *paired*):
+
+| seed | WF Δ (st_rev − base) | CPCV mean Δ |
+|---|---|---|
+| default | +0.0028 | +0.0021 |
+| 0   | +0.0045 | +0.0015 |
+| 7   | +0.0048 | +0.0006 |
+| 42  | (paired, below) | +0.0011 |
+| 123 | +0.0029 | +0.0019 |
+
+- **Seed-robust and always positive:** WF Δ ∈ [+0.003, +0.005] and CPCV mean Δ ∈ [+0.0006,
+  +0.0021] — positive at **5/5 seeds**, never flat or negative. The baseline CPCV mean itself
+  wobbles ±~0.0004 across seeds, so most of the st_rev lift sits above the seed-noise floor.
+- **But not uniform and interaction-driven:** the paired per-combo CPCV delta (seed 42) is
+  +0.0011 with only **67% of the 45 combos improving** (a third get *worse*); the paired
+  t = +3.00 is inflated because CPCV combos share overlapping training data (effective N ≪ 45).
+  And st_rev's own standalone IC is insignificant — the model-level gain comes from
+  *interactions/conditioning*, not a direct signal, which is more fragile.
+- The WF lift (~+0.004) is consistently **larger** than the CPCV lift (~+0.0014), hinting the
+  reversal edge is period-dependent (WF's later expanding folds weight recent regimes more).
+
+## Path 2 — matched-horizon + block-bootstrap (in-sample, since paper-forward can't resolve a ~0.001 effect for years)
+
+The paper-forward OOS window can't confirm a +0.0014 CPCV effect against ~0.10 monthly-IC
+noise for years, so the verdict was tightened in-sample instead (`scripts/run_reversal_matched_horizon.py`):
+(1) rebuild the panel with a **21-day** label — the reversal's native horizon — and re-run
+everything; (2) a construction scan of trailing windows {5,10,21,42,63}; (3) a
+**moving-block bootstrap** of the seed-averaged per-date ΔIC (the honest significance test the
+paired CPCV t=3.00 wasn't — CPCV combos share training data, so that t is inflated).
+
+**Construction scan — signed cross-sectional IC of the raw trailing-window return** (reversal ⇒
+NEGATIVE; t_nw in parens):
+
+| label | w5 | w10 | w21 | w42 | w63 |
+|---|---|---|---|---|---|
+| 21d | −0.0042 (−0.6) | −0.0018 (−0.2) | +0.0013 (+0.2) | +0.0018 (+0.2) | +0.0075 (+0.8) |
+| 63d | +0.0068 (+1.3) | +0.0083 (+1.4) | +0.0105 (+1.5) | +0.0158 (+1.6) | +0.0196 (+1.8) |
+
+Reversal (negative IC) shows up ONLY at w5/w10 vs the 21d label and is **insignificant**;
+everything else is positive (weak *continuation*). **There is no meaningful short-term reversal
+in this liquid, survivorship-free universe** — the raw trailing return behaves like weak
+momentum, strongest at longer windows.
+
+**Model-level, matched vs shipped horizon** (seed-avg WF; block-bootstrap of per-date ΔIC):
+
+| label | WF baseline IC (t) | WF +st_rev IC (t) | WF ΔIC | bootstrap ΔIC 95% CI | P(ΔIC>0) | CPCV Δmean (frac>0) |
+|---|---|---|---|---|---|---|
+| **21d** (native) | +0.0250 (4.87) | +0.0257 (4.72) | +0.0007 | **[−0.0042, +0.0057]** | 62% | −0.0001 (47%) |
+| **63d** (shipped) | +0.0391 (5.89) | +0.0432 (6.30) | +0.0041 | [+0.0021, +0.0062] | 100% | +0.0011 (67%) |
+
+At the **21-day horizon where reversal should be strongest, st_rev is dead**: WF Δ +0.0007 with
+a bootstrap CI straddling zero, and CPCV Δ −0.0001 — the t-stat even *drops*. The 63d benefit
+does NOT replicate at the matched horizon; it is **horizon-fragile**. So whatever st_rev adds at
+63d is weak short-horizon continuation working through interactions, not a reversal signal.
+
+## Verdict & recommendation — do NOT promote
+
+`st_rev` nominally passes the mechanical bar at 63d (WF ↑, CPCV mean ↑), and its 63d walk-forward
+ΔIC (+0.0041) is even block-bootstrap-significant. **But Path 2 is decisive against promotion:**
+
+1. **The reversal thesis is falsified.** At the native 21-day horizon st_rev is dead (bootstrap CI
+   crosses zero, CPCV Δ ≈ 0). A real ~1-month effect would be *strongest* at ~1-month labels; this
+   is *absent* there and only appears at 63d — the fingerprint of a horizon-specific artifact, not
+   a stable economic signal.
+2. **The one positive is the weakest kind of evidence the project trusts.** The 63d WF significance
+   comes from a single train/test scheme; CPCV (the stricter lens the bar was built around) says
+   +0.0011 marginal, 67% of combos. And st_rev is **one of five price features tried** (mom_12_1,
+   mom_6_1, st_rev, low_vol, amihud) — finding one WF-significant improvement across five candidates
+   is textbook multiple-comparisons.
+3. **Cost stays real:** a live price-data dependency on a price-feature-free frozen model, a
+   retrain + refreeze, and a wider serve-parity surface — for a benefit that is not reversal, is
+   CPCV-marginal, and evaporates at the matched horizon.
+
+**Recommendation: do NOT promote `st_rev` (nor low_vol/amihud/all3).** Per instructions I stopped
+before wiring serve or retraining. This closes the reversal/low-vol/illiquidity Tier-0 line the
+same way momentum closed: real-looking in one slice, not a stable model-level edge. The
+price-feature harness stays for the next idea (residual reversal on sector-neutral returns, beta,
+turnover), but raw short-term reversal should not be re-litigated in this universe.
+
+## What was kept (default-off — shipped model / serve / paper-forward untouched)
+
+- `panel.short_term_reversal()`, `panel.low_vol()`, `panel.amihud()` beside the momentum fns.
+- `PRICE_FEATURES` widened to the 5-feature research registry; `price_feature_matrices(close,
+  dv=None)` builds `amihud` only when dollar volume is supplied; `build_fundamental_panel`
+  derives `rank_features` from the matrices actually built (a skipped amihud is never ranked).
+- `scripts/run_reversal_test.py` (WF + CPCV head-to-head) and `tests/test_reversal_features.py`
+  (PIT / parity / NaN-safety incl. zero-volume masking + dv-optional amihud). 214 tests green.
+
+All of it is gated behind `price_features=False`: the frozen artifact, the serve path, and
+the paper-forward book are byte-identical.
+
+---
+
 # News Memory & News-Aware Narration Verdict (2026-07-03)
 
 Narration can now "bring up the past" — reference recent and historically-material news

@@ -19,9 +19,25 @@ import pandas as pd
 from .config import DELISTING_RETURN, LABEL_HORIZON_DAYS, MAX_STALE_DAYS, MIN_SECTOR_BUCKET
 from .edgar.tickers import cik_to_ticker
 from .features import FEATURES
-from .panel import forward_return_to_last, month_end_dates
+from .panel import (
+    amihud,
+    forward_return_to_last,
+    low_vol,
+    momentum_6_1,
+    momentum_12_1,
+    month_end_dates,
+    short_term_reversal,
+)
 from .pit import assert_pit, available_date
 from .sector import sic_division
+
+# Price-derived features: computed as-of the rebalance date from the shared close
+# (and dollar-volume) matrices, NOT carried on the filing row like FEATURES. Point-in-time
+# and survivorship-free by construction (only past prices; dead names keep their column).
+# This is the shared registry the head-to-head research scripts draw arms from; the
+# shipped model uses NONE of them (build_fundamental_panel(price_features=False) default).
+# ``amihud`` needs the dollar-volume matrix, so it is only built when ``dv`` is supplied.
+PRICE_FEATURES = ["mom_12_1", "mom_6_1", "st_rev", "low_vol", "amihud"]
 
 # Imputed terminal return by ledger reason, sourced from the locked config decision
 # (DESIGN.md §10): Form 15 deregistration ("dereg") = going-dark -> -1.00; Form 25/25-NSE
@@ -75,21 +91,65 @@ def liquidity_mask(
     return liquid.fillna(False)
 
 
-def add_sector_ranks(cross: pd.DataFrame, min_sector_bucket: int = MIN_SECTOR_BUCKET) -> pd.DataFrame:
-    """Rank-normalize FEATURES within sector for ONE date's cross-section.
+def add_sector_ranks(
+    cross: pd.DataFrame,
+    min_sector_bucket: int = MIN_SECTOR_BUCKET,
+    features: list[str] = FEATURES,
+) -> pd.DataFrame:
+    """Rank-normalize ``features`` within sector for ONE date's cross-section.
 
     Falls back to a cross-section-wide rank where a sector bucket is too thin to
     rank reliably. Ranks are computed over the full known-at-date universe --
     never conditioned on whether a name later got a label (that would let the
-    future pick the rank basis).
+    future pick the rank basis). ``features`` defaults to the fundamentals; the
+    caller widens it to ``FEATURES + PRICE_FEATURES`` when price features are on,
+    so momentum is ranked through the exact same code the fundamentals are.
     """
     out = cross.copy()
-    for f in FEATURES:
+    for f in features:
         g = out.groupby("sector")[f]
         sec_rank = g.rank(pct=True)
         bucket = g.transform("count")
         date_rank = out[f].rank(pct=True)
         out[f"{f}_rank"] = sec_rank.where(bucket >= min_sector_bucket, date_rank)
+    return out
+
+
+def price_feature_matrices(
+    close: pd.DataFrame, dv: pd.DataFrame | None = None
+) -> dict[str, pd.DataFrame]:
+    """Wide [date x ticker] matrix per price feature, computed once for the whole run.
+
+    ``dv`` (dollar volume) is optional: without it the volume-based ``amihud`` matrix
+    is skipped (the price-only features still build). Callers derive the rank list from
+    the returned keys, so a skipped feature is simply never attached or ranked.
+    """
+    mats = {
+        "mom_12_1": momentum_12_1(close),
+        "mom_6_1": momentum_6_1(close),
+        "st_rev": short_term_reversal(close),
+        "low_vol": low_vol(close),
+    }
+    if dv is not None:
+        mats["amihud"] = amihud(close, dv)
+    return mats
+
+
+def attach_price_features(
+    cross: pd.DataFrame, price_date, mom_mats: dict[str, pd.DataFrame]
+) -> pd.DataFrame:
+    """Attach each price feature's as-of-``price_date`` value, keyed by price column.
+
+    Shared by the TRAIN (panel) and SERVE paths so a name's momentum vector is
+    identical both sides. ``cross['ticker']`` is the price column (dead names are
+    ``TICKER~CIK``), so delisted names map through unchanged. A name with too little
+    history — or no quote on ``price_date`` — gets NaN, handled downstream like any
+    thin fundamental (ranked where present, else filled at score time).
+    """
+    out = cross.copy()
+    for name, mat in mom_mats.items():
+        row = mat.loc[price_date] if price_date in mat.index else pd.Series(dtype=float)
+        out[name] = out["ticker"].map(row)
     return out
 
 
@@ -106,9 +166,15 @@ def build_fundamental_panel(
     min_dollar_volume: float | None = None,
     min_price: float = 1.0,
     winsorize: tuple[float, float] | None = None,
+    price_features: bool = False,
 ) -> pd.DataFrame:
     reason_return = reason_return or REASON_RETURN
     c2t = ticker_map if ticker_map is not None else cik_to_ticker()
+    # Price features attach as-of each rebalance date; matrices built once up front.
+    # rank_features follows the matrices ACTUALLY built (amihud is skipped without dv),
+    # so add_sector_ranks never ranks a column that was never attached.
+    mom_mats = price_feature_matrices(close, dollar_volume) if price_features else None
+    rank_features = FEATURES + list(mom_mats) if mom_mats else FEATURES
     dmap = {}
     if delistings is not None and len(delistings):
         for cik, dd, reason in zip(delistings["cik"], delistings["delist_date"], delistings["reason"]):
@@ -157,9 +223,14 @@ def build_fundamental_panel(
             liquid = liquidity_mask(latest, d, close, dv_med, min_dollar_volume, min_price)
             latest = latest[latest["imputed"] | liquid]
 
+        # Price features attach as-of d (a month-end trading day in close.index),
+        # then are ranked through the same add_sector_ranks the fundamentals use.
+        if mom_mats is not None:
+            latest = attach_price_features(latest, d, mom_mats)
+
         # Ranks over the full known-at-date universe, BEFORE the label drop (the serve
         # path ranks the identical universe -- there are no labels at serve time).
-        latest = add_sector_ranks(latest, MIN_SECTOR_BUCKET)
+        latest = add_sector_ranks(latest, MIN_SECTOR_BUCKET, features=rank_features)
         labeled = latest.dropna(subset=["label"])
         if len(labeled) < min_names:
             continue
