@@ -143,6 +143,48 @@ def momentum_6_1(close: pd.DataFrame, lookback: int = 126, skip: int = 21) -> pd
     return close.shift(skip) / close.shift(lookback) - 1.0
 
 
+def short_term_reversal(close: pd.DataFrame, lookback: int = 21) -> pd.DataFrame:
+    """Trailing ~1-month return: ``close / close.shift(21) - 1`` (NO skip).
+
+    The classic short-term reversal signal (Jegadeesh 1990): recent losers tend to
+    outperform over the next month. Kept as the RAW trailing return, so its
+    cross-sectional IC against forward returns is NEGATIVE -- that negative sign IS
+    the reversal effect (unlike momentum, this feature deliberately KEEPS the most
+    recent month, the very month momentum skips). The tree model learns the sign and
+    :func:`~stockscan.validation.rank_ic` is signed, so it is reported honestly.
+    Point-in-time by construction: only PAST closes relative to each row's date.
+    """
+    return close / close.shift(lookback) - 1.0
+
+
+def low_vol(close: pd.DataFrame, lookback: int = 126) -> pd.DataFrame:
+    """NEGATIVE trailing ~6-month realized volatility of daily returns (signed feature).
+
+    The low-volatility anomaly: low-vol names have historically earned higher
+    risk-adjusted returns. We NEGATE realized vol so a HIGHER value = LOWER past vol =
+    the hypothesized higher-return leg (the sign points the same way the fundamentals
+    do). Point-in-time (only past daily returns); NaN until ``lookback`` observations
+    exist, mirroring momentum's full-lookback requirement.
+    """
+    return -close.pct_change().rolling(lookback, min_periods=lookback).std()
+
+
+def amihud(close: pd.DataFrame, dv: pd.DataFrame, lookback: int = 21,
+           min_periods: int = 15) -> pd.DataFrame:
+    """Amihud (2002) illiquidity: trailing mean of ``|daily return| / dollar_volume``.
+
+    A price-impact proxy -- how far price moves per dollar traded. HIGHER = more
+    illiquid; the illiquidity premium says illiquid names earn higher returns, so the
+    raw measure has a POSITIVE expected IC (kept raw -- the model learns the sign).
+    Point-in-time (past closes + past dollar volume, both from :func:`load_matrices`).
+    Zero-volume days would divide by zero, so they are masked to NaN before averaging;
+    ``min_periods`` (< ``lookback``) tolerates the occasional masked day. Absolute
+    magnitude is irrelevant -- the panel rank-normalizes the value within sector.
+    """
+    daily_illiq = close.pct_change().abs() / dv.where(dv > 0)
+    return daily_illiq.rolling(lookback, min_periods=min_periods).mean()
+
+
 def forward_return(close: pd.DataFrame, horizon: int = LABEL_HORIZON_DAYS) -> pd.DataFrame:
     """Forward total return over ``horizon`` trading days (uses future prices -- it's the label)."""
     return close.shift(-horizon) / close - 1.0
