@@ -1,4 +1,4 @@
-"""argus — the Textual app: status bar + four views over the scanner.
+"""argus — the Textual app: status bar + five views over the scanner.
 
 Read-mostly (the only writes are watchlist/alert curation). Heavy data loads
 once in a background worker so the app opens instantly; narration (the slow LLM
@@ -7,6 +7,8 @@ a fake facade for headless tests.
 """
 
 from __future__ import annotations
+
+import time
 
 from textual import on, work
 from textual.app import App, ComposeResult
@@ -18,7 +20,8 @@ from textual.widgets import (
 )
 
 from .chart import candle_panel, price_chart, verdict
-from .logo import GLYPH, TAGLINE
+from .logo import BANNER, GLYPH, TAGLINE
+from .splash import FRAMES, render_eye, scan_line
 
 
 class StatusBar(Static):
@@ -41,6 +44,46 @@ class StatusBar(Static):
             f"nightly [{ns_col}]{ns}[/{ns_col}]   "
             f"alerts [{'yellow' if al else 'dim'}]{al}[/]"
         )
+
+
+class Splash(Vertical):
+    """The all-seeing-eye loading overlay: the argus wordmark above an eye that
+    looks around and blinks while data loads. Purely cosmetic and firewalled —
+    it renders characters on a timer and touches no data. Hidden the moment the
+    background load finishes (see ``ArgusApp._dismiss_splash``)."""
+
+    FRAME_S = 0.09   # ~11 fps — smooth gaze + a lively blink
+
+    def compose(self) -> ComposeResult:
+        yield Static(BANNER, id="splash-mark")
+        yield Static(id="splash-eye")
+        yield Static(TAGLINE, id="splash-tag")
+        yield Static(id="splash-scan")
+
+    def on_mount(self) -> None:
+        self._tick = 0
+        self._timer = None
+        self._paint()
+        self.start()
+
+    def start(self) -> None:
+        """(Re)start the animation — used at boot and again on manual refresh."""
+        if self._timer is None:
+            self._timer = self.set_interval(self.FRAME_S, self._advance)
+
+    def stop(self) -> None:
+        if self._timer is not None:
+            self._timer.stop()
+            self._timer = None
+
+    def _advance(self) -> None:
+        self._tick += 1
+        self._paint()
+
+    def _paint(self) -> None:
+        gaze, openness = FRAMES[self._tick % len(FRAMES)]
+        self.query_one("#splash-eye", Static).update("\n".join(render_eye(gaze, openness)))
+        self.query_one("#splash-scan", Static).update(scan_line(self._tick))
 
 
 class ScanView(Vertical):
@@ -130,6 +173,7 @@ class TickerView(VerticalScroll):
         self._events = None          # None = still loading; [] = none found
         self._news = None
         self._quote = None
+        self._profile = None         # None = loading; {} = fetched, nothing to show
         self._narr_tier = None
         if not hasattr(self, "_chart_style"):
             self._chart_style = "candle"
@@ -143,6 +187,34 @@ class TickerView(VerticalScroll):
             return "[dim]—[/dim]"
         c = "green" if x >= 0 else "red"
         return f"[{c}]{x:+.1f}%[/{c}]"
+
+    def _profile_block(self) -> list[str]:
+        """What the company does + where it's based (Intrinio, live-view only)."""
+        p = getattr(self, "_profile", None)
+        if p is None:
+            return ["", "[dim]company profile · loading …[/dim]"]
+        if not p:
+            return []          # fetched, nothing to show — stay quiet
+        out = [""]
+        desc = p.get("description")
+        if desc:
+            out.append(f"[dim]{desc}[/dim]")   # full text; the Static widget wraps it
+        country = p.get("country")
+        if country in ("United States of America", "United States"):
+            country = "USA"
+        loc = ", ".join(x for x in (p.get("city"), p.get("state"), country) if x)
+        bits = []
+        if loc:
+            bits.append(f"HQ {loc}")
+        if p.get("industry"):
+            bits.append(p["industry"])
+        if p.get("employees"):
+            bits.append(f"{p['employees']:,} employees")
+        if p.get("url"):
+            bits.append(p["url"])
+        if bits:
+            out.append("[dim]" + "  ·  ".join(bits) + "[/dim]")
+        return out if len(out) > 1 else []
 
     def _price_block(self) -> list[str]:
         pr = getattr(self, "_price", None)
@@ -219,6 +291,7 @@ class TickerView(VerticalScroll):
             f"[b]{m['name']}[/b]   [dim]·[/dim]   {tk}   [dim]·[/dim]   {m['sector']}{watch}",
             f"[reverse {v['color']}] {v['call']} [/reverse {v['color']}]  [dim]{v['reason']}[/dim]",
         ]
+        out += self._profile_block()
         out += self._price_block()
         out += [
             "",
@@ -252,10 +325,11 @@ class TickerView(VerticalScroll):
         if getattr(self, "_res", None) is not None:
             self.query_one("#tk-body", Static).update(self._build(self._res))
 
-    def set_enrichment(self, cik: int, events, news, quote) -> None:
+    def set_enrichment(self, cik: int, events, news, quote, profile) -> None:
         if getattr(self, "_cik", None) != cik or getattr(self, "_res", None) is None:
             return
         self._events, self._news, self._quote = events, news, quote
+        self._profile = profile if profile is not None else {}
         self._rerender()
 
     def set_quote(self, cik: int, quote) -> None:
@@ -358,9 +432,186 @@ class PaperView(Vertical):
             self.query_one(Sparkline).data = ics
 
 
+class TreemapStatic(Static):
+    """The treemap grid: maps a mouse cell to a tile so hover shows detail and a
+    click opens the full page. ``owner`` is the MarketsView it reports to."""
+
+    _boxes: list = []
+    owner = None
+
+    def _tile(self, event):
+        from .treemap import tile_at
+
+        if not self._boxes or self.owner is None:
+            return None
+        off = event.get_content_offset(self)
+        return None if off is None else tile_at(self._boxes, off.x, off.y)
+
+    def on_mouse_move(self, event) -> None:
+        idx = self._tile(event)
+        if idx != getattr(self, "_hover", None):
+            self._hover = idx
+            self.owner.on_tile_hover(idx)
+
+    def on_click(self, event) -> None:
+        idx = self._tile(event)
+        if idx is not None:
+            self.owner.on_tile_click(idx)
+
+
+class MarketsView(VerticalScroll):
+    """Markets overview: thematic groups (AI/SaaS/EV…) + fine industries with the
+    model's top picks; a per-market treemap drill-in (tiles sized by live cap, hover
+    for detail, click to open the full page)."""
+
+    def compose(self) -> ComposeResult:
+        yield Select([("▸ overview (all markets)", "__overview__")], id="market-pick",
+                     value="__overview__", allow_blank=False)
+        yield Static(id="markets-body")            # overview list
+        yield Static(id="markets-maphead")         # market title (map mode)
+        yield TreemapStatic(id="markets-map")      # the treemap grid (map mode)
+        yield Static(id="markets-detail")          # hover detail (map mode)
+
+    def populate(self, adata) -> None:
+        self.adata = adata
+        self.query_one("#markets-map", TreemapStatic).owner = self
+        self._themes = adata.theme_markets()
+        self._sectors = adata.markets()
+        self._caps = {}          # cik -> market cap (USD); missing key = still loading
+        opts = [("▸ overview (all markets)", "__overview__")]
+        opts += [(f"◆ {g['market']}  (theme)", f"theme::{g['market']}") for g in self._themes]
+        opts += [(g["market"], f"ind::{g['market']}") for g in self._sectors]
+        sel = self.query_one("#market-pick", Select)
+        sel.set_options(opts)
+        sel.value = "__overview__"
+        self.query_one("#markets-body", Static).update(self._build())
+        self._set_mode("overview")
+        ciks = [p["cik"] for grp in (self._themes + self._sectors) for p in grp["picks"]]
+        if ciks:
+            self.app.load_market_caps(ciks)
+
+    def _set_mode(self, mode: str) -> None:
+        self._mode = mode
+        is_map = mode == "map"
+        self.query_one("#markets-body", Static).display = not is_map
+        for wid in ("#markets-maphead", "#markets-map", "#markets-detail"):
+            self.query_one(wid).display = is_map
+
+    def set_caps(self, caps: dict) -> None:
+        self._caps = caps or {}
+        if getattr(self, "_mode", "overview") == "overview":   # don't clobber a treemap
+            self.query_one("#markets-body", Static).update(self._build())
+
+    @on(Select.Changed, "#market-pick")
+    def _market_pick(self, e: Select.Changed) -> None:
+        if getattr(self, "adata", None) is None:
+            return
+        val = str(e.value)
+        if val == "__overview__":
+            self._set_mode("overview")
+            self.query_one("#markets-body", Static).update(self._build())
+            return
+        kind, _, name = val.partition("::")
+        self._map_name = name
+        self._set_mode("map")
+        self.query_one("#markets-maphead", Static).update(
+            f"[b]{name.upper()}[/b]   [dim]· fetching live market caps …[/dim]")
+        self.query_one("#markets-map", TreemapStatic).update("")
+        self.query_one("#markets-detail", Static).update("")
+        self.app.load_market_map(kind, name)
+
+    def set_map(self, name: str, items: list) -> None:
+        if getattr(self, "_mode", None) != "map" or getattr(self, "_map_name", None) != name:
+            return   # user switched markets before the caps came back — ignore
+        from .treemap import render_treemap, tile_boxes
+
+        self._map_items = items[:18]
+        mapw = self.query_one("#markets-map", TreemapStatic)
+        head = self.query_one("#markets-maphead", Static)
+        if not self._map_items:
+            head.update(f"[b]{name.upper()}[/b]")
+            self._map_markup = "[dim]no market-cap data available[/dim]"
+            mapw._boxes = []
+        else:
+            head.update(f"[b]{name.upper()}[/b]   [dim]· {len(items)} names · tiles sized by "
+                        f"market cap, colored by model signal · hover for detail, "
+                        f"click to open[/dim]")
+            self._map_markup = render_treemap(self._map_items, width=76, height=20)
+            mapw._boxes = tile_boxes([it["cap"] for it in self._map_items], 76, 20)
+        mapw.update(self._map_markup)
+        self.query_one("#markets-detail", Static).update(
+            "[dim]hover a tile for company detail · click to open the full page[/dim]")
+
+    def on_tile_hover(self, idx) -> None:
+        items = getattr(self, "_map_items", None)
+        if not items or idx is None or idx >= len(items):
+            return
+        from .data import render_market_detail
+
+        it = items[idx]
+        fund = self.adata.fundamentals(it["cik"])
+        prof = self.adata.profile(it["cik"])   # cached (warmed by the map worker)
+        self._detail_markup = render_market_detail(fund, prof, it.get("cap"))
+        self.query_one("#markets-detail", Static).update(self._detail_markup)
+
+    def on_tile_click(self, idx) -> None:
+        items = getattr(self, "_map_items", None)
+        if items and idx is not None and idx < len(items):
+            self.app.show_ticker(int(items[idx]["cik"]))
+
+    @staticmethod
+    def _fmt_cap(x) -> str:
+        if x is None:
+            return "n/a"
+        if x >= 1e12:
+            return f"${x / 1e12:.2f}T"
+        if x >= 1e9:
+            return f"${x / 1e9:.1f}B"
+        if x >= 1e6:
+            return f"${x / 1e6:.0f}M"
+        return f"${x:,.0f}"
+
+    def _group_lines(self, grp: dict, caps: dict) -> list[str]:
+        """One market's header + pick rows (ticker, model pct, live cap, size bar)."""
+        picks = grp["picks"]
+        mx = max((caps.get(p["cik"]) or 0.0) for p in picks)
+        lines = [f"[b]{grp['market'].upper()}[/b]   "
+                 f"[dim]{grp['count']} names · top {len(picks)} by model[/dim]"]
+        for p in picks:
+            cap = caps.get(p["cik"])
+            cap_txt = self._fmt_cap(cap) if p["cik"] in caps else "…"
+            bar = ""
+            if cap and mx > 0:
+                bar = "[green]" + "█" * max(1, round(cap / mx * 16)) + "[/green]"
+            lines.append(f"  [cyan]{p['ticker']:<7}[/cyan] {p['name']:<34} "
+                         f"[dim]{p['pct']:>3}th[/dim]  {cap_txt:>8}  {bar}")
+        lines.append("")
+        return lines
+
+    def _build(self) -> str:
+        sectors = getattr(self, "_sectors", None)
+        if not sectors:
+            return "[dim]loading …[/dim]"
+        caps = getattr(self, "_caps", {})
+        themes = getattr(self, "_themes", []) or []
+        out = ["[b]markets[/b]   [dim]· top names by the model, sized by live market "
+               "cap · pick a market above for a treemap[/dim]", ""]
+        out.append("[b cyan]THEMES[/b cyan]   [dim]· auto-tagged from company descriptions[/dim]")
+        if themes:
+            for grp in themes:
+                out += self._group_lines(grp, caps)
+        else:
+            out += ["  [dim]not built — run [/dim][cyan]ops.py themes[/cyan][dim] to tag "
+                    "AI / SaaS / EV / … from descriptions[/dim]", ""]
+        out.append("[b cyan]INDUSTRIES[/b cyan]")
+        for grp in sectors:
+            out += self._group_lines(grp, caps)
+        return "\n".join(out)
+
+
 HELP_TEXT = """[b]argus[/b] — the all-seeing scanner
 
-[b]views[/b]     1 scan    2 ticker    3 watch    4 paper
+[b]views[/b]     1 scan    2 ticker    3 watch    4 paper    5 markets
 [b]find[/b]      /  search  [dim](type a ticker or name, Enter opens)[/dim]
 
 [b]ticker page[/b]
@@ -400,6 +651,7 @@ class ArgusApp(App):
         Binding("2", "view('ticker')", "ticker"),
         Binding("3", "view('watch')", "watch"),
         Binding("4", "view('paper')", "paper"),
+        Binding("5", "view('markets')", "markets"),
         Binding("/", "search", "search"),
         Binding("c", "chart", "chart"),
         Binding("w", "watch_toggle", "±watch"),
@@ -418,6 +670,10 @@ class ArgusApp(App):
         self._injected = adata
         self.adata = None
         self._auto_timer = None
+        # keep the animated splash up for at least one look-around when we're
+        # doing a real load; with an injected facade (tests) reveal instantly.
+        self._min_splash = 0.0 if adata is not None else 1.4
+        self._splash_started = 0.0
 
     def compose(self) -> ComposeResult:
         yield StatusBar(id="status")
@@ -426,12 +682,15 @@ class ArgusApp(App):
             yield TickerView(id="ticker")
             yield WatchView(id="watch")
             yield PaperView(id="paper")
+            yield MarketsView(id="markets")
         yield Footer()
+        yield Splash(id="splash")   # all-seeing-eye loading overlay (on top)
 
     def on_mount(self) -> None:
         self.theme = "textual-dark"
         self.query_one(StatusBar).show_loading()
         self.sub_title = TAGLINE
+        self._splash_started = time.monotonic()
         if self._injected is not None:
             self._loaded(self._injected)
         else:
@@ -448,6 +707,7 @@ class ArgusApp(App):
             self.call_from_thread(self.notify, msg, severity="error")
             self.call_from_thread(
                 lambda: self.query_one(StatusBar).update(f"[red]{msg}[/red]"))
+            self.call_from_thread(lambda: self._dismiss_splash(force=True))
             return
         self.call_from_thread(self._loaded, adata)
 
@@ -456,7 +716,34 @@ class ArgusApp(App):
         self.query_one(ScanView).populate(adata)
         self.query_one(WatchView).populate(adata)
         self.query_one(PaperView).populate(adata)
+        self.query_one(MarketsView).populate(adata)
         self.query_one(StatusBar).show_status(adata.status())
+        self._dismiss_splash()
+
+    # -- the loading splash ------------------------------------------------------
+    def _dismiss_splash(self, *, force: bool = False) -> None:
+        """Hide the eye once data is ready — but not before a minimum on-screen
+        time, so a fast load still shows one full look-around (unless forced,
+        e.g. on a load error, when we want the message visible immediately)."""
+        try:
+            splash = self.query_one(Splash)
+        except Exception:
+            return
+        if not splash.display:
+            return
+        remaining = 0.0 if force else self._min_splash - (time.monotonic() - self._splash_started)
+        if remaining > 0:
+            self.set_timer(remaining, self._hide_splash)
+        else:
+            self._hide_splash()
+
+    def _hide_splash(self) -> None:
+        try:
+            splash = self.query_one(Splash)
+        except Exception:
+            return
+        splash.stop()
+        splash.display = False
 
     def show_ticker(self, cik: int) -> None:
         if self.adata is None:
@@ -487,10 +774,69 @@ class ArgusApp(App):
         ev = _try(lambda: self.adata.events(cik), [])
         news = _try(lambda: self.adata.news(cik), [])
         quote = _try(lambda: self.adata.live_quote(cik), None)
-        self.call_from_thread(self._show_enrichment, cik, ev, news, quote)
+        prof = _try(lambda: self.adata.profile(cik), None)
+        self.call_from_thread(self._show_enrichment, cik, ev, news, quote, prof)
 
-    def _show_enrichment(self, cik: int, ev, news, quote) -> None:
-        self.query_one(TickerView).set_enrichment(cik, ev, news, quote)
+    def _show_enrichment(self, cik: int, ev, news, quote, prof) -> None:
+        self.query_one(TickerView).set_enrichment(cik, ev, news, quote, prof)
+
+    @work(thread=True, group="mktcap", exclusive=True)
+    def load_market_caps(self, ciks) -> None:
+        """Fill in live market caps for the markets view — cache-first, light concurrency."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        def one(cik):
+            try:
+                return cik, self.adata.market_cap(cik)
+            except Exception:
+                return cik, None
+
+        caps = {}
+        with ThreadPoolExecutor(max_workers=6) as ex:
+            for cik, cap in ex.map(one, list(ciks)):
+                caps[cik] = cap
+        self.call_from_thread(self._show_market_caps, caps)
+
+    def _show_market_caps(self, caps: dict) -> None:
+        self.query_one(MarketsView).set_caps(caps)
+
+    @work(thread=True, group="mktmap", exclusive=True)
+    def load_market_map(self, kind: str, name: str) -> None:
+        """Fetch one market's live caps (bounded candidate pool) for the treemap."""
+        from concurrent.futures import ThreadPoolExecutor
+
+        try:
+            items = self.adata.market_constituents(kind, name)
+        except Exception:
+            items = []
+
+        def one(it):
+            it = dict(it)
+            try:
+                it["cap"] = self.adata.market_cap(it["cik"])
+            except Exception:
+                it["cap"] = None
+            return it
+
+        if items:
+            with ThreadPoolExecutor(max_workers=6) as ex:
+                items = list(ex.map(one, items))
+            items = [it for it in items if it.get("cap")]
+            items.sort(key=lambda it: it["cap"], reverse=True)
+            # warm the profile cache for the tiles we'll show, so hover detail is
+            # instant (each get_profile is cached after the first fetch)
+            with ThreadPoolExecutor(max_workers=6) as ex:
+                list(ex.map(lambda it: self._safe_profile(it["cik"]), items[:18]))
+        self.call_from_thread(self._show_market_map, name, items)
+
+    def _safe_profile(self, cik):
+        try:
+            return self.adata.profile(cik)
+        except Exception:
+            return None
+
+    def _show_market_map(self, name: str, items: list) -> None:
+        self.query_one(MarketsView).set_map(name, items)
 
     @work(thread=True, group="quote", exclusive=True)
     def load_quote(self, cik: int) -> None:
@@ -587,6 +933,10 @@ class ArgusApp(App):
     def on_unmount(self) -> None:
         if self._auto_timer is not None:
             self._auto_timer.stop()
+        try:                            # quit mid-load: stop the eye's timer
+            self.query_one(Splash).stop()
+        except Exception:
+            pass
         if self.adata is not None and self._injected is None:
             self.adata.close()
 

@@ -1,5 +1,46 @@
 Screen {
     layout: vertical;
+    layers: base overlay;
+}
+
+/* the all-seeing-eye loading splash — a full-screen overlay above everything.
+   dock keeps it out of the Screen's vertical flow (so it can't force a scrollbar
+   gutter); the overlay layer paints it on top of the views. */
+#splash {
+    layer: overlay;
+    dock: top;
+    width: 100%;
+    height: 100%;
+    align: center middle;
+    background: $background;
+}
+
+#splash-mark {
+    width: auto;
+    text-align: center;
+    color: $accent;
+    text-style: bold;
+}
+
+#splash-eye {
+    width: auto;
+    text-align: center;
+    color: $accent;
+    text-style: bold;
+    margin: 1 0;
+}
+
+#splash-tag {
+    width: auto;
+    text-align: center;
+    color: $text-muted;
+}
+
+#splash-scan {
+    width: auto;
+    text-align: center;
+    color: $accent;
+    margin-top: 1;
 }
 
 StatusBar {
@@ -13,13 +54,29 @@ StatusBar {
     height: 1fr;
 }
 
-ScanView, WatchView, PaperView, TickerView {
+ScanView, WatchView, PaperView, TickerView, MarketsView {
     padding: 1 2;
 }
 
 #sector {
     width: 32;
     margin-bottom: 1;
+}
+
+#market-pick {
+    width: 48;
+    margin-bottom: 1;
+}
+
+#markets-map {
+    height: 20;
+}
+
+#markets-detail {
+    height: auto;
+    margin-top: 1;
+    border-top: dashed $panel;
+    padding-top: 1;
 }
 
 #scan-table, #watch-table {

@@ -6,6 +6,7 @@
   uv run python scripts/ops.py universe           # security-master refresh
   uv run python scripts/ops.py monitor [--no-llm] [--no-edgar]
   uv run python scripts/ops.py news [--no-llm]     # watchlist headline memory (live-view)
+  uv run python scripts/ops.py themes              # auto-tag AI/SaaS/EV markets (live-view)
   uv run python scripts/ops.py watch add AAPL --note "core holding"
   uv run python scripts/ops.py watch ls | rm AAPL
   uv run python scripts/ops.py alerts [--all]
@@ -161,6 +162,25 @@ def job_news(state: OpsState, no_llm: bool = False) -> dict:
     return _run_logged(state, "news", _ingest)
 
 
+def job_themes(state: OpsState) -> dict:
+    """Auto-tag thematic markets (AI/SaaS/EV…) from Intrinio descriptions (LIVE-VIEW ONLY).
+
+    Fetches the (cached) business description for every liquid name in the current
+    cross-section and keyword-tags it into themes.sqlite for the markets page. Firewalled
+    from the signal; idempotent — descriptions are cached (PROFILE_REFETCH_DAYS), so a
+    re-run re-tags from cache. The FIRST run fetches the whole cross-section (~3k names),
+    so it is the slow one; later runs are cheap."""
+    from stockscan.serve import build_cross_section, load_serve_data
+    from stockscan.themes import refresh_theme_tags
+
+    def _build() -> dict:
+        data = load_serve_data()
+        cross = build_cross_section(data, data.close.index[-1])
+        return refresh_theme_tags([int(c) for c in cross["cik"].tolist()])
+
+    return _run_logged(state, "themes", _build)
+
+
 def job_monitor(state: OpsState, no_llm: bool = False, edgar: bool = True,
                 alerts_ok: bool = True) -> dict:
     from stockscan.narrate.llm import LocalLLM
@@ -206,6 +226,9 @@ def job_nightly(state: OpsState, no_llm: bool = False) -> int:
     # news ingest is firewalled from the signal, so a degraded price night doesn't
     # gate it; it just refreshes the watchlist's headline memory (quota-capped)
     job_news(state, no_llm=no_llm)
+    # theme tags are firewalled + description-cached (re-tag is cheap after the first
+    # build); refresh so new/changed names flow into the markets page's AI/SaaS/EV groups
+    job_themes(state)
     run_id = state.job_start("nightly")
     state.job_finish(run_id, "degraded" if degraded else "ok",
                      {"prices_failed_frac": round(deltas.get("failed", 0) / checked, 4),
@@ -277,6 +300,7 @@ def main(argv=None) -> int:
     p.add_argument("--no-edgar", action="store_true")
     p = sub.add_parser("news")
     p.add_argument("--no-llm", action="store_true", help="heuristic extraction only")
+    sub.add_parser("themes")
     p = sub.add_parser("nightly")
     p.add_argument("--no-llm", action="store_true")
 
@@ -327,6 +351,8 @@ def main(argv=None) -> int:
                     job_monitor(state, no_llm=args.no_llm, edgar=not args.no_edgar)
                 elif args.cmd == "news":
                     job_news(state, no_llm=args.no_llm)
+                elif args.cmd == "themes":
+                    job_themes(state)
                 elif args.cmd == "nightly":
                     return job_nightly(state, no_llm=args.no_llm)
                 elif args.cmd == "watch":
