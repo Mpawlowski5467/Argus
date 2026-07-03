@@ -28,6 +28,12 @@ def _feats():
     return pd.DataFrame(rows)
 
 
+_NEWS = [
+    {"id": "new_ABC123", "date": "2026-03-15", "source": "reuters.com",
+     "event_type": "M&A", "takeaway": "Reported acquisition of a rival announced"},
+]
+
+
 def _good_llm(system, user):
     pkt = json.loads(user)
     s = pkt["signals"][0]
@@ -181,6 +187,98 @@ def test_template_huge_values_stay_grounded():
     r = narrate_packet(pkt)  # template path re-checks grounding honestly
     assert "e+" not in r["narrative"] and "E+" not in r["narrative"]
     assert r["grounded"], r.get("template_leaks")
+
+
+def _news_llm(system, user):
+    pkt = json.loads(user)
+    s = pkt["signals"][0]
+    exp = expected_directions(pkt)
+    a = pkt["context"]["news"][0]
+    return json.dumps({
+        "reasoning": f"{s['label']} sits at the {s['pct_rank']}th percentile.",
+        "summary": (f"{pkt['meta']['name']} shows {s['label']} of {s['value']}{s['unit']} "
+                    f"at the {s['pct_rank']}th percentile. Separately, {a['source']} "
+                    f"reported a {a['event_type']} development."),
+        "citations": [{"id": s["id"], "direction": exp[s["id"]]},
+                      {"id": a["id"], "direction": "reported"}],
+    })
+
+
+def test_build_packet_attaches_number_free_news_context():
+    pkt = build_packet(1, features_df=_feats(), news=[
+        {"id": "new_X", "date": "2026-03-15", "source": "reuters.com",
+         "event_type": "guidance", "takeaway": "Guidance cut to $873 million for the year"}])
+    entry = pkt["context"]["news"][0]
+    assert entry["id"] == "new_X" and entry["event_type"] == "guidance"
+    assert "873" not in entry["takeaway"]          # every numeral stripped
+    # a news date's YEAR still grounds (via the date field); a fabricated figure does not
+    assert is_grounded("Reported in March 2026.", pkt)
+    assert not is_grounded("A fabricated 873% jump.", pkt)
+
+
+def test_news_free_packet_is_unchanged():
+    """A packet built without news has no context key — byte-identical to before."""
+    assert "context" not in build_packet(1, features_df=_feats())
+    assert "context" not in build_packet(1, features_df=_feats(), news=[])
+
+
+def test_fabricated_number_still_caught_with_news_context():
+    """The acceptance guard: news context present must NOT weaken the fabrication
+    check. A number that appeared only in the RAW article (stripped from the packet
+    takeaway) is still a hallucination when the narration emits it."""
+    pkt = build_packet(1, features_df=_feats(), news=[
+        {"id": "new_ACQ", "date": "2026-03-15", "source": "reuters.com",
+         "event_type": "M&A", "takeaway": "Reported buyback of 873 million shares"}])
+
+    def bad_llm(system, user):
+        return json.dumps({
+            "reasoning": "",
+            "summary": "Following the reported buyback, ROA jumped an incredible 873%.",
+            "citations": [{"id": "new_ACQ", "direction": "reported"}],
+        })
+
+    r = narrate_packet(pkt, llm=bad_llm)
+    assert r["source"] == "template-fallback"
+    assert 873.0 in r["violations"]                # the article's own number is NOT blessed
+
+
+def test_narrate_accepts_valid_news_citation():
+    pkt = build_packet(1, features_df=_feats(), news=_NEWS)
+    r = narrate_packet(pkt, llm=_news_llm)
+    assert r["source"] == "llm" and r["grounded"] and r["first_pass_ok"]
+    assert any(c["id"] == _NEWS[0]["id"] and c["direction"] == "reported"
+               for c in r["citations"])
+
+
+def test_unknown_news_citation_is_caught():
+    pkt = build_packet(1, features_df=_feats(), news=_NEWS)
+    v = validate_narration(
+        {"reasoning": "", "summary": "Fine.",
+         "citations": [{"id": "new_DOESNOTEXIST", "direction": "reported"}]}, pkt)
+    assert any(str(x).startswith("unknown-citation-id") for x in v)
+
+
+def test_news_citation_must_be_reported_not_a_signal_direction():
+    """News carries no supports/detracts sign — that would be the firewall leaking a
+    signal into the score's framing. Only the neutral 'reported' direction is valid."""
+    pkt = build_packet(1, features_df=_feats(), news=_NEWS)
+    nid = _NEWS[0]["id"]
+    v = validate_narration(
+        {"reasoning": "", "summary": "Fine.",
+         "citations": [{"id": nid, "direction": "supports"}]}, pkt)
+    assert any(str(x).startswith("news-bad-direction") for x in v)
+    v_ok = validate_narration(
+        {"reasoning": "", "summary": "Fine.",
+         "citations": [{"id": nid, "direction": "reported"}]}, pkt)
+    assert v_ok == []
+
+
+def test_packet_hash_ignores_news_context():
+    """Live headlines must never invalidate a narration cached on unchanged funds."""
+    from stockscan.narrate.cache import packet_hash
+
+    assert packet_hash(build_packet(1, features_df=_feats())) == \
+        packet_hash(build_packet(1, features_df=_feats(), news=_NEWS))
 
 
 def test_driver_directions_enter_expected_and_template():

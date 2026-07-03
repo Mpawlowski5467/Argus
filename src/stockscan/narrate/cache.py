@@ -44,6 +44,10 @@ def packet_hash(packet: dict) -> str:
         p.get("meta", {}).pop(k, None)
     for k in VOLATILE_MODEL:
         p.get("model", {}).pop(k, None)
+    # context.news is LIVE-VIEW only: daily headline churn must never invalidate a
+    # narration cached on unchanged fundamentals (fresh-news narration is on-demand
+    # via the TUI 'n' key), so the news context is excluded from the change hash.
+    p.pop("context", None)
     return hashlib.sha256(json.dumps(p, sort_keys=True).encode()).hexdigest()[:16]
 
 

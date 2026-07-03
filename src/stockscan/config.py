@@ -109,6 +109,21 @@ SHORT_MIN_ADV = 5_000_000
 HYSTERESIS_ENTER = 0.20
 HYSTERESIS_EXIT = 0.40
 
+# --- news memory (LIVE-VIEW + NARRATION ONLY — never scoring/backtest/panel) -----
+# A local, timestamped store of Intrinio headline+summary articles + versioned LLM
+# extractions, so narration can "bring up the past". FIREWALLED: news is never a
+# feature, never scored, never point-in-time-joined into the panel. Everything is
+# timestamped so it COULD be made point-in-time later, but it stays out of the signal.
+NEWS_DB_PATH = ARTIFACTS_DIR / "news.sqlite"
+NEWS_FETCH_LIMIT = 12                 # articles pulled per company per Intrinio call
+NEWS_REFETCH_HOURS = 12               # hard quota cache: skip the network re-fetch for
+                                      # a name fetched more recently than this
+NEWS_MATERIALITY_FLOOR = 0.35         # curation: drop articles below this materiality
+NEWS_CREDIBILITY_FLOOR = 0.45         # curation: drop below this source credibility
+                                      # (press-wire sits at 0.4 < floor, so a wire item
+                                      # must be decisively material to surface; unknown
+                                      # hosts default to 0.5 and pass)
+
 # --- continuous operation (Phase 5, DESIGN.md §8) -------------------------------
 OPS_STATE_PATH = ARTIFACTS_DIR / "ops_state.sqlite"   # mutable ops state (SQLite)
 PAPER_DIR = ARTIFACTS_DIR / "paper_forward"           # append-only paper-forward store

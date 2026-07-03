@@ -1,3 +1,95 @@
+# News Memory & News-Aware Narration Verdict (2026-07-03)
+
+Narration can now "bring up the past" — reference recent and historically-material news
+themes and cite the article — WITHOUT weakening the anti-fabrication guarantee. A local,
+timestamped news store (Intrinio headline+summary + versioned LLM extractions) feeds
+number-free takeaways into the narration packet. **The whole layer is firewalled: news is
+never a feature, never scored, never point-in-time-joined into the panel** — it is
+live-view + narration ONLY. Everything is timestamped so it *could* be made point-in-time
+later; it stays out of the signal (the honest fundamental OOS IC ~0.037 is the thing this
+protects). Gate: the Phase-4 0-fabrication / full-traceability gate must still hold WITH
+news context present. **GATE: PASS.**
+
+## Faithfulness eval WITH news context (16 names, gemma4:26b, 5 live headlines each)
+
+`uv run python scripts/eval_narration.py --n 16 --news 5`
+
+| metric | result |
+|---|---|
+| names carrying news context | **16 / 16** |
+| fabricated numbers in FINAL output | **0 / 16** |
+| citation traceability in FINAL output | **16 / 16** |
+| names that actually cited ≥1 article | 15 / 16 (avg ~2.1 news citations) |
+| first-pass valid (raw LLM) | 13 / 16 (81%) |
+| fixed by violation-feedback retry | 3 / 16 |
+| template fallback needed | **0 / 16** |
+| latency | mean ~94s, p90 ~174s |
+
+The guard earns its keep *with news present*: INO's first attempt fabricated the numeral
+`-3.0`; CRCL and DCH emitted malformed / uncited citations — all caught, retried, and the
+reader never saw them. First-pass validity (81%) matches the news-free Phase-4 run (82%),
+so the added news contract costs no measurable regression.
+
+## The firewall's linchpin: number-free takeaways
+
+The packet's `context.news` carries `{id, date, source, event_type, takeaway}` — and the
+takeaway is stripped of ALL numerals (`packet.news_context`). So the grounding guard's
+numeral domain stays the *fundamentals* packet: a fabricated figure is still caught even
+when a news summary contained that very number (a stripped-away "$873M" cannot re-enter via
+narration — regression-tested). Only a date's YEAR survives, via the `date` field. The raw
+article summary (the real numbers) lives in `news.sqlite` and the TUI, never in the packet.
+News is attached AFTER model scoring in `serve.analyze(..., news=)`, and `context` is
+excluded from the narration cache hash so live headlines never invalidate a cached read.
+
+## What was built
+
+- **Narrator contract** (`narrate/narrator.py`): the LLM MAY weave in news themes / past
+  events but MUST cite the article — `{"id": "new_…", "direction": "reported"}`. News is a
+  SEPARATE citation channel: it carries no supports/detracts sign (that would be the
+  firewall leaking a signal into the score's framing), only the neutral "reported". Every
+  cited news id must exist in the context; a numeral in the prose still traces to the
+  packet exactly as before.
+- **News store** (`src/stockscan/newsmem/store.py`, `news.sqlite`): raw articles
+  (insert-or-ignore — ground truth, never mutated), extractions keyed (article_id,
+  version), a per-company fetch throttle. `recall()` (keyword + structured: event-type /
+  date / materiality) and `context_for()` (recent + notable-past) build the narration
+  context.
+- **Extraction** (`newsmem/extract.py`): headline+summary → `{event_type, entities,
+  keywords, takeaway, sentiment, materiality}`, versioned + regenerable. Mirrors the
+  narrator's discipline — an extraction may NOT assert a number not in the raw article
+  (guard → one retry → deterministic heuristic fallback). `llm=None` yields the heuristic,
+  so the store is always populated (the `--no-llm` path, tests).
+- **Curation** (`newsmem/curate.py`): materiality floor + source credibility + title
+  dedup. Press-wire sits below the credibility floor, so a wire item must be decisively
+  material to surface — keep material, drop press-wire spam.
+- **Ops** (`scripts/ops.py news`): nightly watchlist-only ingest (idempotent, quota-capped
+  by a 12h refetch throttle; light tier, heuristic under `--no-llm`), slotted into the
+  nightly flow after `monitor`. Firewalled from the signal, so a degraded price night does
+  not gate it. Lazy on ticker-open in the TUI, cached in the store; a lazy heuristic
+  placeholder is upgraded in place by the nightly LLM run.
+- **TUI**: the ticker page's news section now shows the recalled memory (recent + notable,
+  with event-type badges); the `n` key runs the local model with the recalled news attached
+  (previously it silently produced only the template — now fixed).
+
+## Deferred / accepted
+
+- **Cached monitor narrations stay fundamental-only.** News is attached in the on-demand
+  (`n` key) and serve paths, NOT in the nightly monitor's cached narration — so a cached
+  read is stable and never misleadingly stale. Fresh-news narration is on-demand.
+- **Paraphrased news themes aren't force-cited.** As with signals (Phase-4), the
+  deterministic guard enforces that any news id the LLM *does* cite exists and that no
+  number is fabricated; forcing a citation for an unnamed paraphrased theme needs an LLM
+  judge (same deferred semantic check).
+- Extraction quality is only as good as headline+summary (full-text is never fetched, by
+  decision); the heuristic fallback is intentionally coarse.
+
+Tests: **199 green** (+21 vs Phase-5's 178): 16 news-memory (extraction guard, curation,
+store upsert/dedup/recall, ingest quota cache, heuristic→LLM upgrade, store→packet
+firewall) + 7 narration guards (fabricated-number-with-news, news-citation existence /
+"reported"-only, number-free context, cache-hash ignores news).
+
+---
+
 # Phase-5 — Continuous Operation & Paper-Forward Verdict (2026-07-02)
 
 The machinery now runs unattended: idempotent ingestion jobs, a monitoring loop

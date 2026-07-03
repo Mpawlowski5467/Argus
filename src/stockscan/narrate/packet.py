@@ -7,6 +7,8 @@ here is a prediction — it's a fundamental profile + peer screen.
 
 from __future__ import annotations
 
+import re
+
 import duckdb
 import pandas as pd
 
@@ -40,11 +42,50 @@ def _load_features() -> pd.DataFrame:
     return compute_features(wide)
 
 
+# --- news context (LIVE-VIEW + NARRATION ONLY — never scoring/backtest/panel) ------
+#
+# The packet is downstream of the model; nothing read here can reach the score. News
+# rides along ONLY so the narrator may reference themes/past events and cite the
+# article. The firewall on FABRICATION is kept honest by keeping takeaways NUMBER-FREE:
+# every numeral is stripped, so the grounding guard's numeral domain stays the
+# fundamentals packet and a fabricated figure is still caught even with news present.
+# A date's YEAR is the only news figure that survives, and only via the ``date`` field.
+# The raw article summary (the real numbers) lives in news.sqlite and the TUI, never here.
+_DIGITS = re.compile(r"\d[\d,]*(?:\.\d+)?")
+
+
+def _strip_numbers(text: str) -> str:
+    return " ".join(_DIGITS.sub(" ", str(text or "")).split())
+
+
+def news_context(articles) -> list[dict]:
+    """Shape recall()/extraction rows into packet-safe, number-free news takeaways.
+
+    Each entry: ``{id, date, source, event_type, takeaway}``. ``takeaway`` is
+    defensively stripped of ALL numerals here (belt-and-suspenders over the
+    extraction contract) so no news-derived figure can ever enter ``allowed_numbers``.
+    """
+    out = []
+    for a in articles or []:
+        aid = str(a.get("id") or "").strip()
+        if not aid:
+            continue
+        out.append({
+            "id": aid,
+            "date": (str(a.get("date") or a.get("publication_date") or ""))[:10],
+            "source": str(a.get("source") or ""),
+            "event_type": str(a.get("event_type") or "other"),
+            "takeaway": _strip_numbers(a.get("takeaway") or a.get("title") or "")[:160],
+        })
+    return out
+
+
 def build_packet(
     company,
     features_df: pd.DataFrame | None = None,
     snapshot: pd.DataFrame | None = None,
     as_of=None,
+    news=None,
 ) -> dict:
     """Build the signal packet for a ticker or CIK.
 
@@ -55,6 +96,9 @@ def build_packet(
     Without it, the universe is the latest filing per company in ``features_df``.
     ``as_of``: recorded in meta; ``features_df`` must already be PIT-filtered by the
     caller when an as-of date is in play (the serve path does this).
+    ``news`` (optional): recalled article takeaways (LIVE-VIEW ONLY) attached under
+    ``context.news`` for the narrator to reference/cite. Omitted key when empty, so a
+    news-free packet is byte-identical to before; NEVER touches signals/scoring.
     """
     feats = (features_df if features_df is not None else _load_features()).copy()
     feats["period_end"] = pd.to_datetime(feats["period_end"])
@@ -121,7 +165,7 @@ def build_packet(
     }
     if as_of is not None:
         meta["as_of"] = str(pd.Timestamp(as_of).date())
-    return {
+    packet = {
         "meta": meta,
         "signals": signals,
         "composite": {
@@ -130,3 +174,7 @@ def build_packet(
         },
         "disclaimer": "Fundamental analysis / peer screening only; not investment advice.",
     }
+    ctx = news_context(news)
+    if ctx:
+        packet["context"] = {"news": ctx}
+    return packet

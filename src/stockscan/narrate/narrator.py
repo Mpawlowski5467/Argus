@@ -51,6 +51,15 @@ SYSTEM = (
     "- The model section is a relative rank from a frozen statistical model — describe "
     "it as such, never as a guaranteed return. The composite is a peer screen, not a "
     "forecast.\n"
+    "- If the packet has a 'context.news' list (recent + historically-material article "
+    "takeaways, each with id/date/source/event_type), you MAY weave those themes into "
+    "the summary — including bringing up a relevant PAST event — but frame them as "
+    "REPORTED ('reported', 'according to <source>'), never as established fact, and "
+    "never let news change the verdict/score (those are fixed by code). Cite every news "
+    "item you mention with {\"id\": \"<the article id from context.news>\", "
+    "\"direction\": \"reported\"}. News takeaways are deliberately number-free: do NOT "
+    "attach or invent any figure to a news theme — for numbers, use the fundamentals "
+    "packet or speak qualitatively.\n"
     "- No buy/sell advice, price targets, or predictions. Analysis only."
 )
 
@@ -87,6 +96,16 @@ def expected_directions(packet: dict) -> dict[str, str]:
     if model_pct is not None:
         exp["model"] = "supports" if model_pct >= 50 else "detracts"
     return exp
+
+
+def news_ids(packet: dict) -> set:
+    """Article ids in the packet's news context — the only ids a news citation may name.
+
+    News is a SEPARATE citation channel from signals/drivers: it carries no
+    supports/detracts sign (that would be the firewall leaking a signal into the
+    score's framing), only the neutral 'reported' direction."""
+    return {str(a.get("id")) for a in packet.get("context", {}).get("news", [])
+            if a.get("id")}
 
 
 def flexible_ids(packet: dict, band: float = 5.0) -> set:
@@ -171,6 +190,7 @@ def validate_narration(parsed: dict | None, packet: dict) -> list:
 
     exp = expected_directions(packet)
     flex = flexible_ids(packet)
+    news = news_ids(packet)
     cits = parsed.get("citations", [])
     if not isinstance(cits, list):
         return violations + ["citations-not-a-list"]
@@ -181,7 +201,11 @@ def validate_narration(parsed: dict | None, packet: dict) -> list:
             continue
         cid, cdir = str(c["id"]), str(c["direction"])
         cited_ids.add(cid)
-        if cid not in exp:
+        if cid in news:
+            # news is "reported", not supports/detracts — keep the firewall visible
+            if cdir != "reported":
+                violations.append(f"news-bad-direction:{cid}:{cdir}")
+        elif cid not in exp:
             violations.append(f"unknown-citation-id:{cid}")
         elif cdir not in ("supports", "detracts"):
             violations.append(f"bad-direction:{cid}:{cdir}")
