@@ -47,9 +47,24 @@ def test_dates_decompose_positively_not_as_signed_fragments():
     packet = {"meta": {"as_of": "2026-03-31"}}
     # a reformatted date must trace back to the packet's ISO date...
     assert check_grounding("as of March 31, 2026", packet) == []
+    assert check_grounding("in March 2026 the filing", packet) == []
     # ...but the date must NOT whitelist fabricated negatives like -3% or -31%
     assert -3.0 in check_grounding("revenue fell -3% this year", packet)
     assert -31.0 in check_grounding("a -31% collapse", packet)
+
+
+def test_date_components_do_not_bless_fabricated_figures():
+    """Month/day integers from packet dates must not whitelist invented numbers
+    (review finding: '12%' and '31%' passed for any Dec-31 filer)."""
+    packet = {"meta": {"period_end": "2025-09-30", "as_of": "2026-06-30"},
+              "model": {"trained_through": "2025-12-31"}}
+    assert 30.0 in check_grounding("margins expanded 30% this year", packet)
+    assert 31.0 in check_grounding("a 31% market share", packet)
+    assert 12.0 in check_grounding("revenue up 9% over the past 12 months", packet) \
+        or 9.0 in check_grounding("revenue up 9% over the past 12 months", packet)
+    assert 6.0 in check_grounding("a 6% dividend yield", packet)
+    # years still trace
+    assert check_grounding("the fiscal 2025 period", packet) == []
 
 
 def test_plural_form_types_are_stripped():

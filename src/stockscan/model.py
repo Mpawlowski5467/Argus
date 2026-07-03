@@ -175,6 +175,19 @@ class Artifact:
             raise KeyError(f"artifact expects feature columns missing from input: {missing}")
         return self.booster.predict(X[self.feature_cols].fillna(0.5).to_numpy())
 
+    def explain(self, X: pd.DataFrame) -> pd.DataFrame:
+        """Per-feature signed contributions to each row's score (TreeSHAP via
+        LightGBM's native ``pred_contrib`` — no extra dependency). Columns are
+        ``feature_cols + ['base']``; row sums equal :meth:`score` outputs, so the
+        narration's "drivers" are an exact decomposition, not an approximation."""
+        missing = [c for c in self.feature_cols if c not in X.columns]
+        if missing:
+            raise KeyError(f"artifact expects feature columns missing from input: {missing}")
+        contrib = self.booster.predict(
+            X[self.feature_cols].fillna(0.5).to_numpy(), pred_contrib=True
+        )
+        return pd.DataFrame(contrib, columns=[*self.feature_cols, "base"], index=X.index)
+
 
 def load_artifact(path: Path = MODEL_DIR) -> Artifact:
     """Load the frozen artifact. Raises FileNotFoundError if none has been trained."""

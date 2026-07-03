@@ -1,3 +1,107 @@
+# Phase-4 — Narration Hardening Verdict (2026-07-02)
+
+The NARRATE stage is now a constrained, validated, cached pipeline on real local
+models. Gate (DESIGN.md §8): ~0 fabricated numbers, full citation traceability, a
+sector scan in an acceptable window. **GATE: PASS.**
+
+## Faithfulness eval (34 real tickers, gemma4:26b, seeds 7 + 42)
+
+| metric | result |
+|---|---|
+| fabricated numbers in FINAL output | **0 / 34** |
+| citation traceability in final output | **34 / 34** |
+| first-pass valid (raw LLM) | 28 / 34 (82%) |
+| fixed by violation-feedback retry | 6 / 34 |
+| template fallback needed | **0 / 34** |
+| latency | mean ~153s, p90 ~270s (incl. retries) |
+| cold top-10 narration backfill | ~25 min (lazy/async per §7; ~12 min on the phi4 light tier; ~0 cached) |
+
+The guard earns its keep visibly: DRH's first attempt fabricated the numeral 31 —
+precisely the date-component class this phase's grounding fix closed — the
+validator caught it, the retry fixed it, the reader never saw it. One 30-name run
+also crash-tested the harness itself (an over-300s generation propagated a raw
+transport timeout at name 29): LLM errors now degrade to violation → retry →
+template instead of crashing, with a regression test. 110 tests green.
+
+## What was built
+
+- **SHAP drivers** (`Artifact.explain`, LightGBM native `pred_contrib` — an EXACT
+  decomposition, row-sums equal the score): top-5 signed contributions enter the
+  packet as `model.drivers`, namespaced `driver:<id>` because the model's learned
+  direction legitimately disagrees with the textbook direction (that IS the
+  learned-signs edge — e.g. high leverage as a positive model driver while the
+  signal reads it as a weakness).
+- **Cited-JSON contract** (narrator.py): the LLM returns `{reasoning, summary,
+  citations:[{id, direction}]}`. The deterministic validator enforces: every
+  numeral in summary AND reasoning grounded; every citation id exists; every
+  direction agrees with the packet's own `read` (signals) or SHAP sign (drivers);
+  any signal/driver MENTIONED by name must be cited (the guard is not opt-out);
+  the 45-55 effective-percentile band accepts either direction. Violations →
+  one retry WITH the violation list → deterministic template fallback.
+- **The packet carries the verdict**: each signal now has an explicit
+  `read: supports|detracts` computed in code — the LLM copies it, never derives
+  it. This single change (plus a brace-balanced JSON parser) took gemma4:26b from
+  0/2 first-pass valid to 3/3 in the confirmation round. Deterministic numbers,
+  LLM prose — the founding principle, applied to directions too.
+- **Materiality-gated cache** (SQLite): unchanged packet → cached; minor drift →
+  light 14B tier; new filing / ≥10-pctile move / changed top drivers → full tier.
+  Volatile fields (as-of stamps, exact score) are excluded from the change hash so
+  daily re-queries can actually hit; the materiality baseline only resets on FULL
+  narrations (no ratchet past the threshold via small steps).
+- **Sector scan** (`scripts/scan.py`): the deterministic ranked table renders in
+  ~37s (data load dominated); narration is lazy for the top N, cache-aware.
+
+## The model decision (benchmarked on the M5 Pro, DESIGN §10's deferred call)
+
+| model | warm latency | tok/s | first-pass valid (after fixes) |
+|---|---|---|---|
+| **gemma4:26b (full tier)** | ~150s | 32.8 | 3/3 |
+| **phi4 (light tier)** | ~74s | 11.9 | 3/3 |
+| mistral-small3.1 | 72s | 7.5 | not selected |
+| gpt-oss:20b | 106s | 28.6 | reasoning-token heavy |
+| qwen3.6:27b-mlx | **timed out repeatedly** | — | disqualified |
+
+Runtime verdict: **llama.cpp/GGUF via Ollama**. The MLX-format path was
+non-functional on this Ollama build (hard timeouts even warm) — DESIGN's
+MLX-vs-llama.cpp question resolves itself empirically. The DESIGN-era candidates
+(Qwen2.5-32B / Gemma-3-27B) were superseded by newer local equivalents already on
+disk; no new downloads were needed.
+
+## What the adversarial review caught (fixed + regression-tested)
+
+The review's finder agents produced empirical repros; its verify phase died on an
+API spend limit, so every finding was re-verified inline before fixing:
+
+- **Date components blessed fabrications**: the Phase-2 date fix whitelisted bare
+  month/day integers, so "up 12%" or "31% share" passed grounding for any Dec-31
+  filer. Dates (ISO and natural-language) are now stripped from BOTH sides with
+  only the year surviving as a numeral.
+- **The direction guard was opt-in**: a wrong-direction claim could simply omit
+  its citation. Now any signal/driver mentioned by its packet label without a
+  covering citation is a violation.
+- **Brace-naive JSON parsing** falsely rejected valid chatty replies (a `{` in
+  surrounding prose corrupted the slice) — this, not model quality, drove much of
+  the initial 0/2 benchmark validity. Now brace-balanced and string-aware.
+- Template fixes: honest grounded flag (checked, not asserted), no scientific
+  notation leaking untraceable mantissa/exponent numerals, no signal listed as
+  both strongest and weakest on thin packets.
+- Cache fixes: materiality checked before the unchanged shortcut; light-tier runs
+  no longer ratchet the baseline.
+
+## Deferred / accepted
+
+- Direction enforcement matches mentions by exact packet labels — paraphrased
+  references ("profitability" for ROA) escape the mention check (the citations
+  the LLM does provide are still direction-checked). A semantic-level check needs
+  an LLM judge — Phase-5 faithfulness monitoring candidate.
+- Latency: ~150s/name full tier is fine for watchlist monitoring (narrations are
+  cached and materiality-gated); a cold full-sector scan of hundreds of names
+  remains intentionally lazy/async per DESIGN §7.
+- `scripts/analyze.py` re-narrates per invocation (no cache wiring in the CLI yet);
+  scan.py is the cached path.
+
+---
+
 # Phase-3 — Backtest & Signal Mechanics Verdict (2026-07-02)
 
 **GATE: PASS.** The net-of-cost edge survives real trading mechanics. Signals are the

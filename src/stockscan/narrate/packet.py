@@ -20,7 +20,7 @@ _PCT = {
     "roa", "op_margin", "gross_profitability", "roe", "accruals",
     "asset_growth", "revenue_growth", "cash_to_assets",
 }
-_LABELS = {
+LABELS = {
     "gross_profitability": "Gross profitability (GP/assets)",
     "roa": "Return on assets",
     "op_margin": "Operating margin",
@@ -32,6 +32,7 @@ _LABELS = {
     "asset_growth": "Asset growth YoY",
     "revenue_growth": "Revenue growth YoY",
 }
+_LABELS = LABELS  # backwards-compat alias
 
 
 def _load_features() -> pd.DataFrame:
@@ -89,13 +90,22 @@ def build_packet(
         if pd.isna(v):
             continue
         pct = row.get(f"{f}_pct")
+        pct_int = int(round(pct)) if pd.notna(pct) else None
+        effective = None if pct_int is None else (
+            pct_int if FEATURE_SIGN[f] > 0 else 100 - pct_int
+        )
         sig = {
             "id": f,
             "label": _LABELS[f],
             "value": round(v * 100, 1) if f in _PCT else round(v, 2),
             "unit": "%" if f in _PCT else "x",
-            "pct_rank": int(round(pct)) if pd.notna(pct) else None,
+            "pct_rank": pct_int,
             "direction": "higher-is-better" if FEATURE_SIGN[f] > 0 else "lower-is-better",
+            # the deterministic verdict — the narrator copies it, never derives it
+            # (a 32nd-pct asset growth is a PLUS under the asset-growth anomaly;
+            # deriving that from 'lower-is-better' is a known LLM stumble)
+            "read": None if effective is None else
+                    ("supports" if effective >= 50 else "detracts"),
         }
         if prior is not None and pd.notna(prior[f]) and f in _PCT:
             sig["yoy_change_pp"] = round((v - prior[f]) * 100, 1)

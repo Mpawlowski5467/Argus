@@ -29,7 +29,7 @@ from .fundamental_panel import add_sector_ranks, liquidity_mask, pit_snapshot, p
 from .intrinio_universe import universe_ticker_map
 from .model import Artifact, load_artifact
 from .narrate.ground import check_grounding
-from .narrate.packet import build_packet
+from .narrate.packet import LABELS, build_packet
 from .narrate.narrator import narrate_packet
 from .panel import load_matrices
 
@@ -162,6 +162,28 @@ def analyze(
     feats_pit = data.feats[data.feats["available_date"] <= as_of]
     packet = build_packet(cik, features_df=feats_pit, snapshot=cross, as_of=as_of)
     packet["meta"]["ticker"] = column
+    # SHAP drivers: an exact decomposition of the target's score into per-feature
+    # contributions — the ML -> narration bridge (DESIGN.md §7). Sign convention:
+    # positive contribution pushes the model signal UP ("supports").
+    contrib = artifact.explain(hit).iloc[0]
+    ranked_drivers = sorted(
+        ((c, float(contrib[c])) for c in artifact.feature_cols),
+        key=lambda x: -abs(x[1]),
+    )
+    # driver ids are namespaced ("driver:roa") because the MODEL's learned direction
+    # can legitimately disagree with the textbook signal direction (that is the
+    # learned-signs edge) — the citation validator must never conflate the two
+    drivers = [
+        {
+            "id": f"driver:{c.removesuffix('_rank')}",
+            "label": LABELS.get(c.removesuffix("_rank"), c),
+            "contribution": round(v, 4),
+            "direction": "supports" if v > 0 else "detracts",
+        }
+        for c, v in ranked_drivers[:5]
+        if abs(v) > 1e-6
+    ]
+
     packet["model"] = {
         "label": "Frozen-model cross-sectional signal (relative rank, not a return forecast)",
         "score": round(float(scores[cross.index.get_loc(hit.index[0])]), 4),
@@ -170,6 +192,7 @@ def analyze(
         "n_names": int(len(cross)),
         "as_of": str(as_of.date()),
         "trained_through": artifact.meta["trained_through"],
+        "drivers": drivers,
     }
 
     result = narrate_packet(packet, llm=llm)
@@ -193,6 +216,12 @@ def analyze(
         "percentile": packet["model"]["percentile"],
         "decile": decile,
         "narrative": result["narrative"],
+        "reasoning": result.get("reasoning", ""),
+        "citations": result.get("citations", []),
+        "attempts": result.get("attempts", 0),
+        "first_pass_ok": result.get("first_pass_ok", True),
+        "narration_violations": result.get("violations", []),
+        "violation_log": result.get("violation_log", []),
         "source": result["source"],
         "grounded": not violations,
         "grounding_violations": violations,

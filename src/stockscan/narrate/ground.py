@@ -14,20 +14,39 @@ import re
 _NUM = re.compile(r"-?\d+(?:,\d{3})*(?:\.\d+)?")
 _FORM = re.compile(r"10-[KQ]s?\b")  # strip form types ("10-K", "10-Ks") — not numbers
 _DATE = re.compile(r"\b(\d{4})-(\d{2})-(\d{2})\b")
+_MONTHS = ("January|February|March|April|May|June|July|August|September|October|"
+           "November|December")
+# natural-language date forms: "March 31, 2026" / "31 March 2026" / "March 2026"
+_TEXT_DATE = re.compile(
+    rf"\b(?:(?:{_MONTHS})\s+\d{{1,2}},?\s+\d{{4}}|\d{{1,2}}\s+(?:{_MONTHS})\s+\d{{4}}"
+    rf"|(?:{_MONTHS})\s+\d{{4}})\b",
+    re.IGNORECASE,
+)
 
 
 def extract_numbers(text: str) -> list[float]:
-    """All numerals in ``text``. ISO dates decompose into POSITIVE (year, month, day)
-    components — never signed fragments like -03 — so a date field can't whitelist
-    fabricated negatives, and a re-formatted date ("March 31, 2026") still traces."""
+    """All numerals in ``text``, with DATES removed first.
+
+    Dates (ISO or natural language) are stripped from both sides rather than
+    decomposed: whitelisting a date's day/month as bare integers would bless
+    fabricated figures like "up 12%" or "31% share" for any Dec-31 filer. Only the
+    YEAR survives as a traceable numeral (so "fiscal 2025" still grounds; a bare
+    fabricated "31" no longer does)."""
     text = _FORM.sub("", text)
     out: list[float] = []
 
-    def _date_parts(m: re.Match) -> str:
-        out.extend((float(m.group(1)), float(int(m.group(2))), float(int(m.group(3)))))
+    def _keep_year_iso(m: re.Match) -> str:
+        out.append(float(m.group(1)))
         return " "
 
-    text = _DATE.sub(_date_parts, text)
+    def _keep_year_text(m: re.Match) -> str:
+        y = re.search(r"\b(\d{4})\b", m.group(0))
+        if y:
+            out.append(float(y.group(1)))
+        return " "
+
+    text = _DATE.sub(_keep_year_iso, text)
+    text = _TEXT_DATE.sub(_keep_year_text, text)
     for m in _NUM.findall(text):
         try:
             out.append(float(m.replace(",", "")))

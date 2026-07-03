@@ -51,9 +51,14 @@ TIINGO_TOKEN = os.environ.get("STOCKSCAN_TIINGO_TOKEN", "")
 INTRINIO_API_KEY = os.environ.get("STOCKSCAN_INTRINIO_KEY", "")
 
 # --- local LLM (NARRATE stage) ------------------------------------------------
-# OpenAI-compatible endpoint: Ollama (http://localhost:11434/v1) or llama.cpp/MLX server.
+# OpenAI-compatible endpoint: Ollama (http://localhost:11434/v1) or llama.cpp server.
+# Tiers benchmarked on the M5 Pro 2026-07-02 (scripts/bench_llm.py): gemma4:26b = full
+# tier (3/3 first-pass valid, ~150s/name), phi4 = light tier for routine minor-change
+# narration (3/3, ~74s). qwen3.6:27b-mlx timed out repeatedly -> the GGUF/llama.cpp
+# runtime is the pick; the Ollama-MLX path was non-functional here.
 LLM_BASE_URL = os.environ.get("STOCKSCAN_LLM_URL", "http://localhost:11434/v1")
-LLM_MODEL = os.environ.get("STOCKSCAN_LLM_MODEL", "qwen2.5:32b")
+LLM_MODEL = os.environ.get("STOCKSCAN_LLM_MODEL", "gemma4:26b")
+LLM_LIGHT_MODEL = os.environ.get("STOCKSCAN_LLM_LIGHT", "phi4")
 
 # --- locked modeling decisions (DESIGN.md §10) --------------------------------
 LABEL_HORIZON_DAYS = 63           # forward return horizon (~3 months)
