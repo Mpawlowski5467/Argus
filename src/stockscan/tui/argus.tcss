@@ -1,0 +1,47 @@
+Screen {
+    layout: vertical;
+}
+
+StatusBar {
+    height: 1;
+    background: $panel;
+    color: $text;
+    padding: 0 1;
+}
+
+#switcher {
+    height: 1fr;
+}
+
+ScanView, WatchView, PaperView, TickerView {
+    padding: 1 2;
+}
+
+#sector {
+    width: 32;
+    margin-bottom: 1;
+}
+
+#scan-table, #watch-table {
+    height: 1fr;
+}
+
+#alert-table {
+    height: 10;
+    margin-top: 1;
+}
+
+.section {
+    margin-top: 1;
+    color: $text-muted;
+    text-style: bold;
+}
+
+#paper-body {
+    padding: 1 0;
+}
+
+#paper-spark {
+    height: 4;
+    margin-top: 1;
+}
