@@ -5,7 +5,7 @@
   uv run python scripts/ops.py fsds               # ingest any missing FSDS quarter
   uv run python scripts/ops.py universe           # security-master refresh
   uv run python scripts/ops.py monitor [--no-llm] [--no-edgar]
-  uv run python scripts/ops.py news [--no-llm]     # watchlist headline memory (live-view)
+  uv run python scripts/ops.py news [--no-llm] [--backfill PAGES]  # watchlist headline memory
   uv run python scripts/ops.py watch add AAPL --note "core holding"
   uv run python scripts/ops.py watch ls | rm AAPL
   uv run python scripts/ops.py alerts [--all]
@@ -132,33 +132,40 @@ def _backfill_missing_paper_months(state: OpsState) -> None:
         job_paper_log(state, as_of=m)
 
 
-def job_news(state: OpsState, no_llm: bool = False) -> dict:
-    """Nightly watchlist news ingest (LIVE-VIEW ONLY — never scoring/backtest/panel).
+def job_news(state: OpsState, no_llm: bool = False, backfill: int = 0) -> dict:
+    """Watchlist news ingest (LIVE-VIEW ONLY — never scoring/backtest/panel).
 
     Fetch + dedup + extract headline/summary for every watched name into news.sqlite.
-    Idempotent and quota-capped: the Intrinio pull is skipped for a name fetched inside
-    NEWS_REFETCH_HOURS, so a re-run does no network work. Extraction (light tier, or the
-    deterministic heuristic under --no-llm) backfills only articles missing the current
-    version. Runs independent of price freshness — news is firewalled from the signal."""
+    Idempotent and quota-capped: the nightly ingest skips the Intrinio pull for a name
+    fetched inside NEWS_REFETCH_HOURS, so a re-run does no network work; extraction
+    (light tier, or the deterministic heuristic under --no-llm) backfills only articles
+    missing the current version. ``backfill=N`` instead paginates N pages of history per
+    name to SEED the memory so recall's 'notable past' has depth on day one. Runs
+    independent of price freshness — news is firewalled from the signal."""
     from stockscan.config import LLM_LIGHT_MODEL
     from stockscan.intrinio_universe import load_universe
     from stockscan.narrate.llm import LocalLLM
-    from stockscan.newsmem import NewsStore, ingest_watchlist
+    from stockscan.newsmem import (
+        NewsStore,
+        backfill_watchlist,
+        ingest_watchlist,
+        watchlist_targets,
+    )
 
     wl = state.watchlist()
+    job = "news_backfill" if backfill else "news"
     if not wl:
-        return _run_logged(state, "news", lambda: {"noop": True, "note": "empty watchlist"})
-    uni = load_universe()
-    tmap = ((uni.sort_values("priority").drop_duplicates("cik")
-             .set_index("cik")["ticker"].to_dict()) if len(uni) else {})
-    ciks_tickers = [(int(w["cik"]), tmap.get(int(w["cik"]))) for w in wl]
+        return _run_logged(state, job, lambda: {"noop": True, "note": "empty watchlist"})
+    targets = watchlist_targets(wl, load_universe())
     llm = None if no_llm else LocalLLM(model=LLM_LIGHT_MODEL)
 
-    def _ingest() -> dict:
+    def _run() -> dict:
         with NewsStore() as store:
-            return ingest_watchlist(store, ciks_tickers, llm=llm)
+            if backfill:
+                return backfill_watchlist(store, targets, llm=llm, pages=backfill)
+            return ingest_watchlist(store, targets, llm=llm)
 
-    return _run_logged(state, "news", _ingest)
+    return _run_logged(state, job, _run)
 
 
 def job_monitor(state: OpsState, no_llm: bool = False, edgar: bool = True,
@@ -277,6 +284,8 @@ def main(argv=None) -> int:
     p.add_argument("--no-edgar", action="store_true")
     p = sub.add_parser("news")
     p.add_argument("--no-llm", action="store_true", help="heuristic extraction only")
+    p.add_argument("--backfill", type=int, default=0, metavar="PAGES",
+                   help="seed the memory: paginate PAGES of history per watched name")
     p = sub.add_parser("nightly")
     p.add_argument("--no-llm", action="store_true")
 
@@ -326,7 +335,7 @@ def main(argv=None) -> int:
                 elif args.cmd == "monitor":
                     job_monitor(state, no_llm=args.no_llm, edgar=not args.no_edgar)
                 elif args.cmd == "news":
-                    job_news(state, no_llm=args.no_llm)
+                    job_news(state, no_llm=args.no_llm, backfill=args.backfill)
                 elif args.cmd == "nightly":
                     return job_nightly(state, no_llm=args.no_llm)
                 elif args.cmd == "watch":

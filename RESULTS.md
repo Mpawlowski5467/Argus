@@ -10,25 +10,28 @@ later; it stays out of the signal (the honest fundamental OOS IC ~0.037 is the t
 protects). Gate: the Phase-4 0-fabrication / full-traceability gate must still hold WITH
 news context present. **GATE: PASS.**
 
-## Faithfulness eval WITH news context (16 names, gemma4:26b, 5 live headlines each)
+## Faithfulness eval WITH news context (34 names × seeds 7+42 = 68 narrations, gemma4:26b)
 
-`uv run python scripts/eval_narration.py --n 16 --news 5`
+`uv run python scripts/eval_narration.py --n 34 --news 5 --seed {7,42}` — 5 live Intrinio
+headlines (number-free) attached to every name. Both seeds independently **GATE: PASS**.
 
-| metric | result |
-|---|---|
-| names carrying news context | **16 / 16** |
-| fabricated numbers in FINAL output | **0 / 16** |
-| citation traceability in FINAL output | **16 / 16** |
-| names that actually cited ≥1 article | 15 / 16 (avg ~2.1 news citations) |
-| first-pass valid (raw LLM) | 13 / 16 (81%) |
-| fixed by violation-feedback retry | 3 / 16 |
-| template fallback needed | **0 / 16** |
-| latency | mean ~94s, p90 ~174s |
+| metric | seed 7 | seed 42 | combined |
+|---|---|---|---|
+| names carrying news context | 34/34 | 34/34 | **68/68** |
+| fabricated numbers in FINAL output | 0/34 | 0/34 | **0/68** |
+| citation traceability in FINAL output | 34/34 | 34/34 | **68/68** |
+| narrations that cited ≥1 article | — | — | **66/68** (avg ~2.1; only 2 cited none) |
+| first-pass valid (raw LLM) | 28/34 | 32/34 | **60/68 (88%)** |
+| fixed by violation-feedback retry | 6/34 | 1/34 | 7/68 |
+| template fallback (still grounded) | 0/34 | 1/34 | 1/68 |
+| latency | mean ~95s | mean ~81s | — |
 
-The guard earns its keep *with news present*: INO's first attempt fabricated the numeral
-`-3.0`; CRCL and DCH emitted malformed / uncited citations — all caught, retried, and the
-reader never saw them. First-pass validity (81%) matches the news-free Phase-4 run (82%),
-so the added news contract costs no measurable regression.
+The guard earns its keep *with news present*: across the runs it caught fabricated numerals
+(e.g. a spurious `-3.0`) and malformed / uncited citations — all fixed on retry, or degraded
+to the deterministic grounded template (the single seed-42 fallback), so the reader never
+saw a fabrication. Combined first-pass validity (88%) meets or beats the news-free Phase-4
+run (82%): the added news contract costs no measurable regression, and news is genuinely
+used (66/68 narrations cite at least one article).
 
 ## The firewall's linchpin: number-free takeaways
 
@@ -62,11 +65,13 @@ excluded from the narration cache hash so live headlines never invalidate a cach
 - **Curation** (`newsmem/curate.py`): materiality floor + source credibility + title
   dedup. Press-wire sits below the credibility floor, so a wire item must be decisively
   material to surface — keep material, drop press-wire spam.
-- **Ops** (`scripts/ops.py news`): nightly watchlist-only ingest (idempotent, quota-capped
-  by a 12h refetch throttle; light tier, heuristic under `--no-llm`), slotted into the
-  nightly flow after `monitor`. Firewalled from the signal, so a degraded price night does
-  not gate it. Lazy on ticker-open in the TUI, cached in the store; a lazy heuristic
-  placeholder is upgraded in place by the nightly LLM run.
+- **Ops** (`scripts/ops.py news [--no-llm] [--backfill PAGES]`): nightly watchlist-only
+  ingest (idempotent, quota-capped by a 12h refetch throttle; light tier, heuristic under
+  `--no-llm`), slotted into the nightly flow after `monitor`. Firewalled from the signal,
+  so a degraded price night does not gate it. Lazy on ticker-open in the TUI, cached in the
+  store; a lazy heuristic placeholder is upgraded in place by the nightly LLM run.
+  `--backfill PAGES` paginates history (Intrinio `next_page`) to SEED the memory so
+  recall's "notable past" has depth on day one instead of accruing over weeks.
 - **TUI**: the ticker page's news section now shows the recalled memory (recent + notable,
   with event-type badges); the `n` key runs the local model with the recalled news attached
   (previously it silently produced only the template — now fixed).
@@ -83,10 +88,11 @@ excluded from the narration cache hash so live headlines never invalidate a cach
 - Extraction quality is only as good as headline+summary (full-text is never fetched, by
   decision); the heuristic fallback is intentionally coarse.
 
-Tests: **199 green** (+21 vs Phase-5's 178): 16 news-memory (extraction guard, curation,
+Tests: **204 green** (+26 vs Phase-5's 178): 19 news-memory (extraction guard, curation,
 store upsert/dedup/recall, ingest quota cache, heuristic→LLM upgrade, store→packet
-firewall) + 7 narration guards (fabricated-number-with-news, news-citation existence /
-"reported"-only, number-free context, cache-hash ignores news).
+firewall, historical backfill, watchlist-job orchestration) + 7 narration guards
+(fabricated-number-with-news, news-citation existence / "reported"-only, number-free
+context, cache-hash ignores news).
 
 ---
 
