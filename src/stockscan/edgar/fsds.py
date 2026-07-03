@@ -96,10 +96,15 @@ def build_fundamentals(sub_path: Path, num_path: Path, out_path: Path) -> int:
     Keeps only 10-K/10-Q(/A) filings and consolidated (empty-coreg) facts.
     Returns the number of fact rows written.
     """
-    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    # COPY writes to a tmp path, promoted only on success: the quarter file's very
+    # existence is the ingest checkpoint, so a crash mid-COPY must never leave a
+    # truncated parquet pinned at the final path (it would read as "done" forever).
+    tmp_path = out_path.with_name("." + out_path.name + ".tmp")
     sub_p = str(sub_path).replace("'", "''")
     num_p = str(num_path).replace("'", "''")
-    out_p = str(out_path).replace("'", "''")
+    out_p = str(tmp_path).replace("'", "''")
     con = duckdb.connect()
     try:
         con.execute(
@@ -137,9 +142,13 @@ def build_fundamentals(sub_path: Path, num_path: Path, out_path: Path) -> int:
                     AND try_strptime(s.filed, '%Y%m%d') IS NOT NULL
                 ) TO '{out_p}' (FORMAT PARQUET, COMPRESSION ZSTD);"""
         )
-        return con.execute(f"SELECT count(*) FROM read_parquet('{out_p}')").fetchone()[0]
+        rows = con.execute(f"SELECT count(*) FROM read_parquet('{out_p}')").fetchone()[0]
     finally:
         con.close()
+    import os
+
+    os.replace(tmp_path, out_path)
+    return rows
 
 
 def ingest_quarter(

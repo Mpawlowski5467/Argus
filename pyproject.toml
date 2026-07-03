@@ -24,6 +24,11 @@ dev = [
     "pytest>=8",
     "ruff>=0.6",
 ]
+# argus — the terminal UI (a thin viewer over the serve/ops layer). Optional so the
+# nightly ingestion/monitor machinery never needs it: `uv sync --extra ui`.
+ui = [
+    "textual>=0.80",
+]
 
 [build-system]
 requires = ["hatchling"]

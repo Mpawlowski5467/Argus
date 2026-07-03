@@ -1,0 +1,201 @@
+"""The view-data facade: turn the serve/ops layer into plain rows for the TUI.
+
+Heavy inputs (the ~11k-column price matrices, the frozen artifact, the ops DB)
+load ONCE into an :class:`ArgusData`; the scored cross-section is built once and
+reused across the scan and watch views. The row-shaping helpers are pure
+functions so they unit-test without Textual or a real data store.
+
+Nothing here trains or re-baselines. The only writes are watchlist/alert
+curation, delegated to :class:`~stockscan.ops.state.OpsState`.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import numpy as np
+import pandas as pd
+
+
+# --- pure row shapers (testable with tiny DataFrames) ---------------------------
+
+def _decile(pct: float) -> int:
+    return int(np.clip(np.ceil(pct * 10), 1, 10))
+
+
+def scan_rows(cross: pd.DataFrame, sector: str | None = None) -> list[dict]:
+    """Ranked rows for the scan table from a SCORED cross-section (has score/pct)."""
+    view = cross if not sector or sector.lower() == "all" else cross[cross["sector"] == sector]
+    view = view.sort_values("score", ascending=False)
+    rows = []
+    for i, (_, r) in enumerate(view.iterrows(), 1):
+        rows.append({
+            "rank": i,
+            "cik": int(r["cik"]),
+            "ticker": str(r.get("ticker") or "—"),
+            "name": str(r.get("name") or "")[:38],
+            "sector": str(r.get("sector") or "—"),
+            "pct": int(round(float(r["pct"]) * 100)),
+            "decile": _decile(float(r["pct"])),
+            "fy": int(r["fy"]) if pd.notna(r.get("fy")) else None,
+        })
+    return rows
+
+
+def sectors_in(cross: pd.DataFrame) -> list[str]:
+    return ["all", *sorted(cross["sector"].dropna().unique())]
+
+
+def watch_rows(watchlist: list[dict], cross: pd.DataFrame,
+               prev_signals: dict[int, dict], feats: pd.DataFrame,
+               as_of=None) -> list[dict]:
+    """Join watched CIKs to the current scored cross-section + last-seen signal.
+
+    A watched name absent from the cross-section (dead, stale filer, illiquid)
+    still appears — flagged — so the watchlist never silently drops the failures.
+    """
+    as_of = pd.Timestamp(as_of) if as_of is not None else None
+    by_cik = cross.set_index(cross["cik"].astype(int))
+    rows = []
+    for w in watchlist:
+        cik = int(w["cik"])
+        prev = prev_signals.get(cik) or {}
+        last_filing = None
+        fsub = feats[feats["cik"] == cik] if "cik" in feats.columns else feats.iloc[0:0]
+        if as_of is not None and "available_date" in fsub.columns:
+            fsub = fsub[fsub["available_date"] <= as_of]
+        if len(fsub):
+            last_filing = str(pd.Timestamp(fsub["available_date"].max()).date())
+        if cik in by_cik.index:
+            r = by_cik.loc[cik]
+            pct = int(round(float(r["pct"]) * 100))
+            prev_pct = prev.get("percentile")
+            rows.append({
+                "cik": cik, "ticker": str(w.get("column") or r.get("ticker") or "—"),
+                "pct": pct, "decile": _decile(float(r["pct"])),
+                "delta": (pct - prev_pct) if prev_pct is not None else None,
+                "last_filing": last_filing, "flag": None,
+            })
+        else:
+            rows.append({
+                "cik": cik, "ticker": str(w.get("column") or "—"),
+                "pct": None, "decile": None, "delta": None,
+                "last_filing": last_filing,
+                "flag": "not in liquid universe / lapsed filer",
+            })
+    return rows
+
+
+# --- the loaded facade ----------------------------------------------------------
+
+@dataclass
+class ArgusData:
+    """Loaded-once heavy inputs + the reusable scored cross-section.
+
+    Holds NO long-lived SQLite connections: the load runs in a background thread
+    but the views query from the main thread, and a sqlite3 connection is bound
+    to its creating thread. Each DB-touching method opens its own short-lived
+    connection instead (cheap; WAL makes it safe alongside the nightly job).
+    """
+
+    data: object          # stockscan.serve.ServeData
+    artifact: object      # stockscan.model.Artifact
+    as_of: pd.Timestamp = None
+    _cross: pd.DataFrame = None
+
+    @classmethod
+    def load(cls, as_of=None) -> "ArgusData":
+        from ..model import load_artifact
+        from ..serve import load_serve_data
+
+        self = cls(data=load_serve_data(), artifact=load_artifact())
+        self.refresh(as_of)
+        return self
+
+    def refresh(self, as_of=None) -> None:
+        """(Re)build and score the cross-section — call after data updates."""
+        from ..serve import build_cross_section
+
+        self.as_of = (pd.Timestamp(as_of) if as_of is not None
+                      else self.data.close.index[-1])
+        cross = build_cross_section(self.data, self.as_of).reset_index(drop=True)
+        cross["score"] = self.artifact.score(cross)
+        cross["pct"] = cross["score"].rank(pct=True)
+        self._cross = cross
+
+    # -- view data ---------------------------------------------------------------
+    def sectors(self) -> list[str]:
+        return sectors_in(self._cross)
+
+    def scan(self, sector: str | None = None) -> list[dict]:
+        return scan_rows(self._cross, sector)
+
+    def ticker(self, query, as_of=None) -> dict:
+        """Full per-name analysis (deterministic; template narration included)."""
+        from ..serve import analyze
+
+        return analyze(query, as_of=as_of or self.as_of, data=self.data,
+                       artifact=self.artifact, llm=None)
+
+    def narrate(self, packet, llm_full=None, llm_light=None) -> dict:
+        """Cache-aware tiered narration (the slow LLM path — run in a worker).
+
+        Opens its own cache connection in the calling thread (the narrate worker),
+        so no sqlite handle crosses a thread boundary.
+        """
+        from ..narrate.cache import NarrationCache, narrate_smart
+
+        cache = NarrationCache()
+        try:
+            return narrate_smart(packet, llm_full=llm_full, llm_light=llm_light, cache=cache)
+        finally:
+            cache.close()
+
+    def watch(self) -> dict:
+        from ..ops.state import OpsState
+
+        with OpsState() as st:
+            wl = st.watchlist()
+            prev = {w["cik"]: (st.get_signal(w["cik"]) or {}) for w in wl}
+            alerts = st.alerts(unseen_only=False, limit=40)
+        rows = watch_rows(wl, self._cross, prev, self.data.feats, self.as_of)
+        return {"rows": rows, "alerts": alerts}
+
+    def status(self) -> dict:
+        from ..ops.state import OpsState
+
+        with OpsState() as st:
+            return status_dict(st, self.artifact, self.as_of)
+
+    def paper(self) -> dict | None:
+        from ..config import PAPER_DIR
+        from ..ops.paper import compare
+
+        if not (PAPER_DIR / "baseline.json").exists():
+            return None
+        return compare(close=self.data.close, ticker_map=self.data.ticker_map)
+
+    def close(self) -> None:
+        pass  # no long-lived connections to release
+
+
+def status_dict(state, artifact, as_of) -> dict:
+    """Cheap status line — no LLM ping (that stays off the hot path)."""
+    from ..ops.jobs import quarters_present
+    from ..ops.paper import artifact_fingerprint, current_vintage
+
+    quarters = quarters_present()
+    try:
+        fp = artifact_fingerprint()
+    except FileNotFoundError:
+        fp = None
+    vintage = current_vintage()
+    last = state.last_run("nightly")
+    return {
+        "as_of": str(pd.Timestamp(as_of).date()) if as_of is not None else None,
+        "fund_quarter": quarters[-1] if quarters else None,
+        "vintage": (vintage or {}).get("hash"),
+        "artifact_registered": bool(vintage and fp and vintage["hash"] == fp),
+        "nightly_status": (last or {}).get("status"),
+        "unseen_alerts": len(state.alerts(unseen_only=True, limit=999)),
+    }

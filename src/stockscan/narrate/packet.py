@@ -20,7 +20,7 @@ _PCT = {
     "roa", "op_margin", "gross_profitability", "roe", "accruals",
     "asset_growth", "revenue_growth", "cash_to_assets",
 }
-_LABELS = {
+LABELS = {
     "gross_profitability": "Gross profitability (GP/assets)",
     "roa": "Return on assets",
     "op_margin": "Operating margin",
@@ -32,6 +32,7 @@ _LABELS = {
     "asset_growth": "Asset growth YoY",
     "revenue_growth": "Revenue growth YoY",
 }
+_LABELS = LABELS  # backwards-compat alias
 
 
 def _load_features() -> pd.DataFrame:
@@ -39,17 +40,34 @@ def _load_features() -> pd.DataFrame:
     return compute_features(wide)
 
 
-def build_packet(company, features_df: pd.DataFrame | None = None) -> dict:
-    """Build the signal packet for a ticker or CIK."""
+def build_packet(
+    company,
+    features_df: pd.DataFrame | None = None,
+    snapshot: pd.DataFrame | None = None,
+    as_of=None,
+) -> dict:
+    """Build the signal packet for a ticker or CIK.
+
+    ``snapshot`` (optional): a pre-built one-row-per-company cross-section (with
+    ``sector`` + FEATURES) to use as the peer-percentile universe -- the serve path
+    passes its point-in-time, liquidity-filtered cross-section here so every
+    percentile in the narration refers to the SAME universe the model scored.
+    Without it, the universe is the latest filing per company in ``features_df``.
+    ``as_of``: recorded in meta; ``features_df`` must already be PIT-filtered by the
+    caller when an as-of date is in play (the serve path does this).
+    """
     feats = (features_df if features_df is not None else _load_features()).copy()
     feats["period_end"] = pd.to_datetime(feats["period_end"])
     cik = company if isinstance(company, int) else cik_for(company)
     if cik is None:
         raise ValueError(f"unknown ticker/cik: {company}")
 
-    # latest filing per company -> the cross-section for peer percentiles
-    snap = feats.sort_values("period_end").drop_duplicates("cik", keep="last").copy()
-    snap["sector"] = snap["sic"].map(sic_division)
+    if snapshot is not None:
+        snap = snapshot.copy()
+    else:
+        # latest filing per company -> the cross-section for peer percentiles
+        snap = feats.sort_values("period_end").drop_duplicates("cik", keep="last").copy()
+        snap["sector"] = snap["sic"].map(sic_division)
     for f in FEATURES:
         snap[f"{f}_pct"] = snap.groupby("sector")[f].rank(pct=True) * 100
     comp = sum(FEATURE_SIGN[f] * (snap[f"{f}_pct"].fillna(50) / 100 - 0.5) for f in FEATURES)
@@ -59,8 +77,12 @@ def build_packet(company, features_df: pd.DataFrame | None = None) -> dict:
     if hit.empty:
         raise ValueError(f"no fundamentals for cik {cik}")
     row = hit.iloc[0]
+    # Prior = the latest filing for an EARLIER period than the snapshot row's — never
+    # positional. iloc[-2] would pair a delinquent re-filing against itself (YoY 0.0)
+    # whenever the latest-available filing isn't the latest-period one.
     history = feats[feats["cik"] == cik].sort_values("period_end")
-    prior = history.iloc[-2] if len(history) >= 2 else None
+    earlier = history[history["period_end"] < pd.Timestamp(row["period_end"])]
+    prior = earlier.iloc[-1] if len(earlier) else None
 
     signals = []
     for f in FEATURES:
@@ -68,27 +90,39 @@ def build_packet(company, features_df: pd.DataFrame | None = None) -> dict:
         if pd.isna(v):
             continue
         pct = row.get(f"{f}_pct")
+        pct_int = int(round(pct)) if pd.notna(pct) else None
+        effective = None if pct_int is None else (
+            pct_int if FEATURE_SIGN[f] > 0 else 100 - pct_int
+        )
         sig = {
             "id": f,
             "label": _LABELS[f],
             "value": round(v * 100, 1) if f in _PCT else round(v, 2),
             "unit": "%" if f in _PCT else "x",
-            "pct_rank": int(round(pct)) if pd.notna(pct) else None,
+            "pct_rank": pct_int,
             "direction": "higher-is-better" if FEATURE_SIGN[f] > 0 else "lower-is-better",
+            # the deterministic verdict — the narrator copies it, never derives it
+            # (a 32nd-pct asset growth is a PLUS under the asset-growth anomaly;
+            # deriving that from 'lower-is-better' is a known LLM stumble)
+            "read": None if effective is None else
+                    ("supports" if effective >= 50 else "detracts"),
         }
         if prior is not None and pd.notna(prior[f]) and f in _PCT:
             sig["yoy_change_pp"] = round((v - prior[f]) * 100, 1)
         signals.append(sig)
 
+    meta = {
+        "ticker": company if isinstance(company, str) else None,
+        "name": row["name"],
+        "cik": int(cik),
+        "fiscal_year": int(row["fy"]) if pd.notna(row["fy"]) else None,
+        "period_end": str(pd.Timestamp(row["period_end"]).date()),
+        "sector": row["sector"],
+    }
+    if as_of is not None:
+        meta["as_of"] = str(pd.Timestamp(as_of).date())
     return {
-        "meta": {
-            "ticker": company if isinstance(company, str) else None,
-            "name": row["name"],
-            "cik": int(cik),
-            "fiscal_year": int(row["fy"]) if pd.notna(row["fy"]) else None,
-            "period_end": str(row["period_end"].date()),
-            "sector": row["sector"],
-        },
+        "meta": meta,
         "signals": signals,
         "composite": {
             "label": "Composite quality score (a peer screen, NOT a return prediction)",

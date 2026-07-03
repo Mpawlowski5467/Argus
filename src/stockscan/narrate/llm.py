@@ -13,10 +13,11 @@ from ..config import LLM_BASE_URL, LLM_MODEL
 
 
 class LocalLLM:
-    def __init__(self, base_url: str | None = None, model: str | None = None, timeout: float = 180.0):
+    def __init__(self, base_url: str | None = None, model: str | None = None, timeout: float = 600.0):
         self.base_url = (base_url or LLM_BASE_URL).rstrip("/")
         self.model = model or LLM_MODEL
         self._client = httpx.Client(timeout=timeout)
+        self.last_usage: dict = {}  # token usage of the most recent completion
 
     def complete(self, system: str, user: str, temperature: float = 0.2) -> str:
         resp = self._client.post(
@@ -31,7 +32,9 @@ class LocalLLM:
             },
         )
         resp.raise_for_status()
-        return resp.json()["choices"][0]["message"]["content"]
+        body = resp.json()
+        self.last_usage = body.get("usage") or {}
+        return body["choices"][0]["message"]["content"]
 
     def __call__(self, system: str, user: str, **kwargs) -> str:
         return self.complete(system, user, **kwargs)
