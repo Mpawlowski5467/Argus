@@ -1,3 +1,200 @@
+# Distress-Risk Classifier Head Verdict (2026-07-03)
+
+A second, independent ML head — a LightGBM **classifier** that predicts the probability a
+company **distress-delists within the next 12 months** — now sits beside the return head.
+It reuses the same point-in-time fundamental ranks (`RANK_COLS`) and the same parity seam
+(`prepare_features → pit_snapshot → add_sector_ranks`), but a binary target and rare-event
+metrics instead of rank IC. It is **orthogonal to the return head** and upgrades the old
+rule-based `-0.70` distress haircut into a *learned* probability. Gate: keep only if it ranks
+distress out-of-sample — AUC well above 0.5 (aim ~0.75), precision @ top-decile many× the
+base rate, decent calibration, **AND** it survives CPCV, not one lucky split. **GATE: PASS.**
+
+Reproduce: `uv run python scripts/run_distress.py --save` (artifact → `artifacts/distress_model/`;
+the return artifact `artifacts/model/` is never touched). The head passed its ranking gate;
+an **offline trade-mechanics gate** (below) then found it doesn't belong in the traded book,
+so it ships as a **FIREWALLED display/alert risk-flag** (serve, TUI, monitor) — **never in the
+paper book, the score, or any trade rule.**
+
+## Out-of-sample scorecard (fundamentals-only, natural prior, 12-month window)
+
+Panel: **834,395 rows · 170 monthly dates · 2011-02 → 2025-03** (censored at the ledger edge
+2026-03-31 so no forward window is unobserved) · **base rate 2.0%** (16,661 distress positives)
+· ~4,908 names/date.
+
+| metric | walk-forward (causal) | CPCV distribution (45 combos) |
+|---|---|---|
+| **ROC-AUC** | **0.703** | **mean 0.744**, std 0.019, min 0.709, p05 0.716, median 0.745, p95 0.776 |
+| AUC > 0.5 / > 0.7 across combos | — | **100% / 100%** |
+| PR-AUC (base rate 0.020) | 0.050 | mean 0.054 |
+| precision @ top-decile | **0.058 → 2.8× base** | — |
+| recall @ top-decile | 0.276 (top 10% of names holds ~28% of all failures) | — |
+| **calibration MAE** | **0.0071** (monotonic; top bin 0.058 predicted → 0.061 realized) | — |
+
+The edge is not a single-split artifact: **every one of the 45 CPCV combinations clears
+AUC 0.70**, with a tight 0.019 spread. Walk-forward (past-only, causal) reads a bit lower
+than CPCV because the earliest 2011–13 folds train on little data; both are comfortably
+above the 0.5 null. The natural-prior probabilities are **directly calibrated** — no Platt/
+isotonic post-hoc step needed — so a predicted 6% distress chance really is ~6% realized.
+
+Feature importance reads as a **textbook distress signature**, which is the sanity check that
+it learned economics not noise: `roa` 15%, `op_margin` 14%, `roe` 13%, `current_ratio` 12%,
+`leverage` 9%, `cash_to_assets` 9%, `accruals` 8% — profitability + liquidity + leverage, the
+Altman/Ohlson variables. Highest-risk names at 2024-06 are SPAC acquisition corps (which
+routinely dissolve) and sub-scale micro-caps.
+
+## The honest part is the LABEL — reason alone is not "distress"
+
+EDGAR's ledger tags each death `delist` (Form 25) or `dereg` (Form 15), but **neither cleanly
+means distress**. Confirming against each security's own terminal price (survivorship-free
+Intrinio, by security id):
+
+- **Form 25 "delist": only 21% are price-confirmed collapses — ~79% are M&A** (the target is
+  acquired at/above market: median terminal price $11, median 1-yr return **+5%**).
+- **Form 15 "dereg": 63% collapse, but ~37% are premium going-private / LBO**, not distress.
+
+So we **price-confirm** distress: a death is a positive only if the stock actually cratered —
+a sub-$1 final print, **or** ≥70% below its own trailing-1yr high, **or** a >50% trailing-year
+loss into the delisting. A priced-but-uncollapsed death is a **benign negative** (a real
+acquisition — correctly *not* distress); a death we cannot price at all is **ambiguous and
+dropped** (~66/date), never guessed. Of 10,989 ledger events: **1,836 distress · 4,468 benign
+M&A/LBO · 4,685 unpriced**. Labeling on `reason` alone is not a stylistic choice — it costs
+real signal:
+
+| labeling | base rate | walk-forward AUC |
+|---|---|---|
+| **price-confirmed distress** (product) | 2.0% | **0.703** |
+| naive reason-only (M&A/LBO counted as distress) | 8.5% | 0.602 |
+
+Contaminating the positive class with healthy-looking acquisitions drags AUC down toward a
+coin flip: the fundamentals genuinely separate *distress*, not *"left the exchange"*.
+
+Robustness also holds across the two knobs that could have flattered it. **Horizon:**
+N=6mo AUC 0.733 (lift 3.2×), N=24mo AUC 0.727 (lift 2.7×) — the edge is stable, shorter
+windows sharper. **Class weighting:** `scale_pos_weight=balanced` *lowers* AUC to 0.682 and
+blows calibration MAE out to 0.204 (probabilities wildly overstated), so the artifact ships
+the natural prior — better ranking *and* honest probabilities.
+
+## Overlay backtest — does P(distress) belong in the traded book? (net-of-cost gate)
+
+`uv run python scripts/run_distress_overlay.py`. Ranking well is necessary but not
+sufficient to *trade* on it. On the SAME no-impute, liquidity-filtered tradable panel the
+return backtest uses — with BOTH the return score and P(distress) generated purged-walk-
+forward OOS (never the frozen artifact — that would be look-ahead) — the head is used as a
+**hard distress exit**: veto any long-book name whose P(distress) clears a threshold.
+
+**The signal is real inside the tradable book.** OOS, the top P(distress) decile averages
+**−2.26% forward 63-day excess** (vs +0.86% bottom) and a **realized 12-month death rate of
+1.64% vs 0.02%** — ~80× separation. So it does rank the failures.
+
+**But the long-side veto changes nothing:**
+
+| long-only book | net CAGR | Sharpe | maxDD |
+|---|---|---|---|
+| baseline (no veto) | +9.17% | 0.42 | −41.6% |
+| + distress veto (t = 0.03 … 0.12) | +9.15 … +9.18% | 0.42 | −41.5 … −41.9% |
+
+ΔSharpe ≈ 0.00 at every threshold. Two structural reasons: the distress base rate in the
+*tradable* universe is only **0.41%** (liquid names rarely die), and the return model's
+quality tilt (roa / leverage / current_ratio) **already keeps distress names out of the
+top-return decile** — the veto touches ~1% of names and the book is essentially unchanged.
+On the long side the two heads are redundant.
+
+**And shorting distress dies to borrow.** The −2.26% gross signal is strong, but distress
+names are precisely the illiquid, hard-to-borrow ones — under the project's borrow tiers
+(100–300 bps) and the `SHORT_MIN_ADV` filter, adding a high-distress short sleeve takes the
+book from net CAGR **+11.1% → −0.5%** and Sharpe **+0.58 → −0.03** (ΔSharpe −0.61). Textbook
+short-alpha-dies-after-borrow, exactly the failure mode §6's borrow realism exists to catch.
+
+**Verdict: do NOT wire the distress head into the traded book.** It is a genuine early-
+warning signal but not monetizable through this strategy's mechanics — its home is a
+**monitoring / risk-flag layer** (surface P(distress) so a human sidesteps the value traps),
+not a trade overlay or the `-0.70` haircut's replacement. *(Aside: tilting the long book
+toward LOW distress risk on its own lifts Sharpe 0.42 → 0.58 at lower vol — a standalone
+safety factor, but a different book from the return-alpha one, not an improvement to it.)*
+This mirrors the momentum / reversal outcomes: a real, PIT-clean signal that does not beat
+the incumbent through honest trading mechanics → **do not promote to the book.**
+
+## Firewalled display / alert layer (built — the signal's actual home)
+
+Since the head ranks failures well but can't be *traded* here, it ships as a **risk-flag
+for the human**, wired exactly like the news layer's firewall: computed AFTER the return
+score is fixed, from the SAME ranks, and **never written into the score, percentile, decile,
+drivers, the packet, the paper book, or any trade rule** (enforced by a byte-identical
+firewall test — attaching the head cannot move the traded signal). It is entirely optional:
+absent a frozen distress artifact, every path behaves exactly as before.
+
+- **`serve.analyze`** attaches a `distress` block — `P(distress-delist within 12mo)`, the
+  target's percentile among its peers, and a `high | elevated | normal` flag (thresholds
+  0.08 / 0.03, anchored to the head's calibration). The artifact loads once into `ServeData`
+  (best-effort; `None` if absent). Live read: AAPL → 0.7% *normal*; Ford → 3.6% *elevated*
+  (83rd pct); across the 2,961-name liquid cross-section, 82 *high* / 545 *elevated*.
+- **TUI** — the ticker page shows a distress line under the model signal (flag + probability
+  + peer percentile, tagged *risk-flag only — not in the score/trade*); the watchlist marks
+  an elevated/high name with `⚠ distress <level>`.
+- **Monitor** — a `distress_risk` alert fires only when a watched name's flag crosses UP a
+  level *between* runs (never every night, never on first sight — like the percentile alert);
+  the level is persisted in `signal_state.distress` (additive SQLite migration) purely for
+  that escalation check. Suppressed on degraded-price nights alongside the other alerts.
+
+## What was built (`src/stockscan/distress.py`, `scripts/run_distress.py`, `scripts/run_distress_overlay.py`)
+
+- **`classify_distress_events`** — tags each ledger death `is_distress ∈ {True, False, None}`
+  via the price-confirmation rule above (thresholds are params + recorded in `meta.json`).
+- **`build_distress_panel`** — PIT + survivorship-correct binary panel: latest 10-K public at
+  `d`, names alive at `d`, sector ranks over the full alive universe, `y=1` for a
+  distress-confirmed death in `(d, d+N]`, `y=0` for survivors and benign exits, ambiguous
+  rows dropped. Rebalance dates whose window runs past the ledger edge are **censored** so a
+  possible-future death is never mislabeled a negative.
+- **Validation** — `walk_forward_predict_proba` + `cpcv_auc` under the SAME purged
+  walk-forward / CPCV as the return head, but with a **12-period purge** (the distress label
+  overlaps 12 months, not 3). `distress_metrics`: pooled ROC-AUC / PR-AUC, per-date
+  precision·recall @ decile, and a pooled reliability table.
+- **Separate frozen artifact** — `fit_distress` + `save_distress_artifact`/
+  `DistressArtifact`/`load_distress_artifact`, mirroring the return head's `Artifact` (no
+  `fit` on the serve side; refuses missing feature columns; version-drift warning). Writes to
+  **`artifacts/distress_model/`** with its own `meta.json` (horizon, censor date, base rate,
+  confirmation thresholds, WF + CPCV metrics on the honesty trail).
+- **`attach_distress_label` + `scripts/run_distress_overlay.py`** — the overlay gate above:
+  labels the return head's tradable panel with the identical windowed rule, generates OOS
+  return + distress signals, and runs the veto sweep, the tradable-universe decile diagnostic,
+  and the borrow-aware short-sleeve probe against the honest backtester. Offline only.
+- **Firewalled display/alert wiring** — `distress_flag` + `load_distress_artifact_optional`;
+  `ServeData.distress_artifact` + `analyze(... distress=)`; the TUI ticker/watchlist surfaces;
+  the monitor `distress_risk` escalation alert + `signal_state.distress` migration. Every one
+  is display/monitoring only, verified firewalled from the traded signal by test.
+
+## Deferred / accepted
+
+- **Never touches a trade rule.** The overlay gate settled the trade question in the negative,
+  so P(distress) does NOT replace the rule-based hard-distress exit or the `-0.70` haircut and
+  is not in the paper book — it is a human-facing risk flag only. The firewall is structural
+  (attached after scoring, never in the packet) and test-enforced.
+- **Serve/TUI score the distress head on the LIQUIDITY-FILTERED cross-section's ranks**, while
+  the frozen artifact was trained on full-universe ranks — a mild rank-basis mismatch accepted
+  for a display flag (the overlay diagnostic showed the head still separates outcomes sharply
+  on tradable-universe ranks). A tradable-universe distress artifact is a later refinement.
+- **Bond-Form-25 early events** (the known ledger limitation, see `intrinio_universe.py`): the
+  ledger's one earliest event per cik is occasionally a *bond* delisting years before the
+  equity died (Sears' 2013 notes Form-25), so its terminal-price check lands on a still-healthy
+  price → the name is scored **benign and lost as a positive**. This deflates recall but injects
+  no false positives (conservative); the 4,685 unpriced-ambiguous drops are the larger recall
+  cost. Both are measured, not hidden.
+- **Universe = full PIT-alive names, not the liquidity-filtered tradable set.** Distress names
+  are systematically illiquid; applying the return head's dollar-volume floor would drop the
+  very positives we want to learn and bias the base rate. A liquidity-filtered serve variant is
+  a later choice.
+
+Tests: **233 passed / 1 skipped** (+19 for the distress head). `tests/test_distress.py` (14):
+windowed-PIT label correctness, no-look-ahead window boundary, survivorship presence,
+ambiguous-drop, censoring, price confirmation distress-vs-M&A, reason bypass,
+`attach_distress_label` window + censor, learns-signal / nothing-in-noise OOS, artifact parity
++ no-retrain + column-drift, flag thresholds, optional loader. Plus the firewall/wiring tests:
+`test_serve.py` (display-only, signal byte-identical with/without the head), `test_ops_state.py`
+(distress persistence + old-DB migration), `test_ops_monitor.py` (escalation-alert-once +
+degraded-night suppression).
+
+---
+
 # Reversal / Low-Vol / Illiquidity Test — All Three Fail; st_rev's Marginal Bar-Pass Dies at the Matched Horizon (2026-07-03)
 
 Direct follow-up to the momentum test (real standalone signal but **non-additive** — did
