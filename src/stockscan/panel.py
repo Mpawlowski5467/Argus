@@ -132,6 +132,17 @@ def momentum_12_1(close: pd.DataFrame, lookback: int = 252, skip: int = 21) -> p
     return close.shift(skip) / close.shift(lookback) - 1.0
 
 
+def momentum_6_1(close: pd.DataFrame, lookback: int = 126, skip: int = 21) -> pd.DataFrame:
+    """6-1 momentum: return from ~6 months ago to ~1 month ago (skips the last month).
+
+    Same skip-the-last-month construction as :func:`momentum_12_1` (the 1-month gap
+    sidesteps short-term reversal); only the lookback shortens to ~6 months. Both use
+    only PAST closes relative to each row's date, so the matrix is point-in-time by
+    construction — the value at date T is knowable at T.
+    """
+    return close.shift(skip) / close.shift(lookback) - 1.0
+
+
 def forward_return(close: pd.DataFrame, horizon: int = LABEL_HORIZON_DAYS) -> pd.DataFrame:
     """Forward total return over ``horizon`` trading days (uses future prices -- it's the label)."""
     return close.shift(-horizon) / close - 1.0
