@@ -16,8 +16,27 @@ import numpy as np
 from stockscan.model import load_artifact
 from stockscan.narrate.ground import check_grounding
 from stockscan.narrate.llm import LocalLLM
-from stockscan.narrate.narrator import validate_narration
+from stockscan.narrate.narrator import news_ids, validate_narration
+from stockscan.narrate.packet import _strip_numbers
+from stockscan.news import company_news
 from stockscan.serve import analyze, build_cross_section, load_serve_data
+
+
+def _live_news_context(ticker: str, limit: int) -> list[dict]:
+    """Number-free news takeaways from LIVE Intrinio headlines (A-gate stand-in for
+    Part B's LLM extraction). Titles are number-stripped into takeaways, so a headline
+    like 'Q3 EPS beats by $0.12' becomes number-free — an ADVERSARIAL news context:
+    if the guard were porous, those stripped figures would slip back in via narration."""
+    arts = company_news(ticker, limit=limit) if ticker else []
+    out = []
+    for a in arts:
+        if not a.get("id"):
+            continue
+        out.append({
+            "id": a["id"], "date": a.get("date") or "", "source": a.get("source") or "",
+            "event_type": "other", "takeaway": _strip_numbers(a.get("title") or ""),
+        })
+    return out
 
 
 def main() -> int:
@@ -26,6 +45,9 @@ def main() -> int:
     ap.add_argument("--model", default=None, help="Ollama model tag (default: config)")
     ap.add_argument("--seed", type=int, default=7)
     ap.add_argument("--as-of", default=None)
+    ap.add_argument("--news", type=int, default=0, metavar="K",
+                    help="attach up to K live Intrinio headlines (number-free) as "
+                         "narration context — the news-hardening acceptance gate")
     args = ap.parse_args()
 
     print("loading data + artifact ...")
@@ -41,17 +63,23 @@ def main() -> int:
           f"with model {llm.model}\n")
 
     stats = {"first_pass_ok": 0, "retried_ok": 0, "fallback": 0,
-             "final_ungrounded": 0, "citation_fail": 0}
+             "final_ungrounded": 0, "citation_fail": 0, "with_news": 0}
     lat, first_violations = [], []
     for i, cik in enumerate(sample, 1):
+        news = _live_news_context(data.ticker_map.get(cik), args.news) if args.news else None
+        if news:
+            stats["with_news"] += 1
         t0 = time.perf_counter()
         try:
-            r = analyze(cik, as_of=as_of, data=data, artifact=artifact, llm=llm)
+            r = analyze(cik, as_of=as_of, data=data, artifact=artifact, llm=llm, news=news)
         except Exception as exc:  # one bad name must never kill the eval
             print(f"  [{i:>3}] cik {cik}: skipped ({type(exc).__name__}: {exc})")
             continue
         dt = time.perf_counter() - t0
         lat.append(dt)
+        nids = news_ids(r["packet"])
+        cited_news = sum(1 for c in r["citations"]
+                         if isinstance(c, dict) and c.get("id") in nids)
 
         # gate condition 1: zero fabricated numbers in the FINAL narration
         if check_grounding(r["narrative"], r["packet"]):
@@ -71,9 +99,10 @@ def main() -> int:
             [r["narration_violations"]] if r.get("narration_violations") else [])
         if vlog and vlog[0]:
             first_violations.append((r["packet"]["meta"]["ticker"], vlog[0][:4]))
+        news_note = f"  news={len(news)}→cited={cited_news}" if news else ""
         print(f"  [{i:>3}] {str(r['packet']['meta']['ticker']):<14} "
               f"{r['source']:<18} attempts={r['attempts']}  {dt:5.1f}s  "
-              f"grounded={r['grounded']}")
+              f"grounded={r['grounded']}{news_note}")
 
     n = len(lat)
     if not n:
@@ -86,6 +115,9 @@ def main() -> int:
           f"{1 - stats['first_pass_ok'] / n:.0%})")
     print(f"passed on retry:         {stats['retried_ok']}/{n}")
     print(f"template fallback:       {stats['fallback']}/{n}")
+    if args.news:
+        print(f"names with news context: {stats['with_news']}/{n} "
+              f"(fabrication gate must hold WITH news present)")
     print(f"latency: mean {lat_a.mean():.1f}s  p50 {np.percentile(lat_a, 50):.1f}s  "
           f"p90 {np.percentile(lat_a, 90):.1f}s")
     print(f"projected COLD top-10 narration backfill: {lat_a.mean() * 10 / 60:.1f} min "

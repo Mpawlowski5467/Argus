@@ -133,11 +133,16 @@ def analyze(
     llm=None,
     min_dollar_volume: float = MIN_DOLLAR_VOLUME,
     max_stale_days: int = MAX_STALE_DAYS,
+    news=None,
 ) -> dict:
     """End-to-end per-ticker analysis at ``as_of`` (default: latest price date).
 
     Everything is keyed off ``available_date <= as_of``; the frozen artifact only
     scores. Returns packet, model signal, grounded narrative, and honesty flags.
+
+    ``news`` (optional): recalled article takeaways for narration context ONLY
+    (LIVE-VIEW). It rides into the packet AFTER scoring — the score/percentile/drivers
+    above are already fixed by the time news is attached, so it cannot touch the signal.
     """
     data = data or load_serve_data()
     artifact = artifact or load_artifact()
@@ -168,7 +173,7 @@ def analyze(
     decile = int(np.clip(np.ceil(target_pct * 10), 1, 10))
 
     feats_pit = data.feats[data.feats["available_date"] <= as_of]
-    packet = build_packet(cik, features_df=feats_pit, snapshot=cross, as_of=as_of)
+    packet = build_packet(cik, features_df=feats_pit, snapshot=cross, as_of=as_of, news=news)
     packet["meta"]["ticker"] = column
     # SHAP drivers: an exact decomposition of the target's score into per-feature
     # contributions — the ML -> narration bridge (DESIGN.md §7). Sign convention:

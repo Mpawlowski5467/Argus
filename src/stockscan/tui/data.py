@@ -208,16 +208,37 @@ class ArgusData:
         return str(r.sort_values("priority").iloc[0][field])
 
     def news(self, cik: int, limit: int = 6) -> list[dict]:
-        """Recent press headlines (Intrinio). Session-cached per cik to spare quota."""
+        """Watchlist headline MEMORY for a name (LIVE-VIEW ONLY — never the signal).
+
+        Lazily ingest into news.sqlite (heuristic extraction — instant; the nightly job
+        upgrades watchlist names to the LLM tier) then recall recent + notable-past
+        events. Quota-capped by the store's fetch throttle and session-cached per cik."""
         cache = self.__dict__.setdefault("_news_cache", {})
         if cik in cache:
             return cache[cik]
-        from ..news import company_news
+        from ..newsmem import NewsStore
+        from ..newsmem.ingest import ingest_company_news
 
         tk = self._pick(cik, "ticker")
-        res = company_news(tk, limit=limit) if tk else []
-        cache[cik] = res
-        return res
+        rows: list[dict] = []
+        try:
+            with NewsStore() as store:
+                ingest_company_news(int(cik), tk, store, llm=None, limit=limit)
+                rows = store.context_for(int(cik)) or store.recall(int(cik), limit=limit)
+        except Exception:
+            rows = []
+        cache[cik] = rows
+        return rows
+
+    def _news_context(self, cik: int) -> list[dict]:
+        """Recalled news memory (recent + notable past) for the narration packet."""
+        from ..newsmem import NewsStore
+
+        try:
+            with NewsStore() as store:
+                return store.context_for(int(cik))
+        except Exception:
+            return []
 
     def live_quote(self, cik: int, refresh: bool = False) -> dict | None:
         """Latest live/intraday quote (Intrinio). Session-cached unless refresh=True."""
@@ -258,18 +279,23 @@ class ArgusData:
                        artifact=self.artifact, llm=None)
 
     def narrate(self, packet, llm_full=None, llm_light=None) -> dict:
-        """Cache-aware tiered narration (the slow LLM path — run in a worker).
+        """On-demand ('n' key) narration with the local model, bringing up recalled news.
 
-        Opens its own cache connection in the calling thread (the narrate worker),
-        so no sqlite handle crosses a thread boundary.
-        """
-        from ..narrate.cache import NarrationCache, narrate_smart
+        Runs in the narrate worker thread. Attaches CURRENT news context (LIVE-VIEW;
+        excluded from any cache key) and narrates FRESH at the full tier — the user
+        asked for a current read, so this deliberately does NOT serve the monitor's
+        cached, fundamental-only narration (nor overwrite it). A dead LLM endpoint
+        degrades to the grounded template inside narrate_packet (never crashes)."""
+        from ..narrate.llm import LocalLLM
+        from ..narrate.narrator import narrate_packet
+        from ..narrate.packet import news_context
 
-        cache = NarrationCache()
-        try:
-            return narrate_smart(packet, llm_full=llm_full, llm_light=llm_light, cache=cache)
-        finally:
-            cache.close()
+        ctx = news_context(self._news_context(int(packet["meta"]["cik"])))
+        if ctx:
+            packet.setdefault("context", {})["news"] = ctx
+        res = narrate_packet(packet, llm=llm_full or LocalLLM())
+        res["tier"] = ("full+news" if ctx else "full") if res.get("source") == "llm" else "template"
+        return res
 
     def watch(self) -> dict:
         from ..ops.state import OpsState

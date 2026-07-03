@@ -180,7 +180,7 @@ class TickerView(VerticalScroll):
         return ["", chart, f"[dim]{style} chart · press c to switch[/dim]"]
 
     def _news_block(self) -> list[str]:
-        out = ["", "[dim]news (Intrinio headlines)[/dim]"]
+        out = ["", "[dim]news memory (Intrinio · recent + notable past)[/dim]"]
         n = getattr(self, "_news", None)
         if n is None:
             out.append("  [dim]loading …[/dim]")
@@ -188,8 +188,10 @@ class TickerView(VerticalScroll):
             out.append("  [dim]no recent headlines[/dim]")
         else:
             for a in n:
+                ev = a.get("event_type")
+                badge = f"[magenta]{ev}[/magenta] " if ev and ev != "other" else ""
                 src = f"  [dim]· {a['source']}[/dim]" if a.get("source") else ""
-                out.append(f"  [cyan]{a['date']}[/cyan]  {a['title'][:78]}{src}")
+                out.append(f"  [cyan]{a['date']}[/cyan]  {badge}{a['title'][:70]}{src}")
         return out
 
     def _events_block(self) -> list[str]:

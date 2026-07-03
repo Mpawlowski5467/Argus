@@ -82,13 +82,23 @@ def _source(url: str) -> str:
 
 
 def shape_article(a: dict) -> dict:
-    """One Intrinio news article -> the fields the view needs."""
+    """One Intrinio news article -> the fields the view + news store need.
+
+    Carries the stable Intrinio ``id`` (the dedup key), the raw ``summary`` (the
+    news store's ground truth), and the article's ``cik`` (from the embedded company
+    record) alongside the display fields. Full-text is never fetched — headline +
+    summary only, by decision."""
     url = a.get("url") or ""
+    cik_raw = ((a.get("company") or {}).get("cik") or "").lstrip("0")
     return {
+        "id": str(a.get("id") or "").strip(),
         "title": " ".join((a.get("title") or "").split()),
+        "summary": " ".join((a.get("summary") or "").split()),
         "date": (a.get("publication_date") or "")[:10],
+        "publication_date": a.get("publication_date") or "",
         "url": url,
-        "source": _source(url),
+        "source": _source(url) or str(a.get("source") or ""),
+        "cik": int(cik_raw) if cik_raw.isdigit() else None,
     }
 
 
