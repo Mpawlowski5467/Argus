@@ -19,8 +19,8 @@ from concurrent.futures import ThreadPoolExecutor
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 
-from ..tui.chart import verdict
-from ..tui.treemap import squarify
+from ..view.chart import verdict
+from ..view.treemap import squarify
 from . import convert
 from .state import STATE
 
@@ -233,6 +233,15 @@ def remove_position(cik: int):
     return {"cik": cik, "removed": True}
 
 
+# -- portfolio scorecard: book-level aggregation of the user's holdings -------
+# DISPLAY-ONLY, firewalled. A same-day peer-rank snapshot of the book (equal- AND
+# value-weighted percentile, distress exposure, concentration) + the full holdings
+# list — never a portfolio forecast, never read into the score or paper book.
+@router.get("/scorecard")
+def scorecard():
+    return convert.jsonable(_facade().scorecard())
+
+
 # -- paper-forward ------------------------------------------------------------
 @router.get("/paper")
 def paper():
@@ -262,4 +271,28 @@ def refresh():
     if STATE.status != "ready":
         raise HTTPException(status_code=503, detail="loading")
     STATE.refresh()
+    return {"ok": True}
+
+
+# -- on-demand data update ("update data" button) ----------------------------
+# Runs the SAME nightly dispatcher launchd runs, as a self-guarded subprocess: pull fresh
+# prices / filings / news now, then POST /reload swaps in the new data. The scheduled nightly
+# is unaffected — both take the repo-wide ops flock, so they can never overlap.
+@router.post("/nightly")
+def nightly_run():
+    if STATE.status != "ready":
+        raise HTTPException(status_code=503, detail="loading")
+    return STATE.start_nightly()
+
+
+@router.get("/nightly")
+def nightly_status():
+    return STATE.nightly_status()
+
+
+@router.post("/reload")
+def reload_facade():
+    """Full reload from disk (after a nightly update) — rebuilds the scored cross-section
+    from freshly-ingested data. The loader/poll handshake covers the reload."""
+    STATE.reload()
     return {"ok": True}

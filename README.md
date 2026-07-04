@@ -11,8 +11,10 @@ stocks: parse SEC EDGAR filings → compute fundamental signals + a walk-forward
 prediction → emit a backtested, cost-aware **buy/sell** verdict → narrate it with a local
 LLM. It runs unattended and answers, per stock, *what the signal is and why*.
 
-The name is the hundred-eyed giant of myth — an all-seeing watcher over the market. Its
-terminal UI (`scripts/argus.py`) is a read-mostly, four-view viewer over the same scanner.
+The name is the hundred-eyed giant of myth — an all-seeing watcher over the market. A
+local **browser UI** (`scripts/argus_web.py`) is a read-mostly front-end over the same
+scanner: a ranked scan, a per-ticker drill-in, a personal **book** (your holdings +
+watchlist, scored), a themes/industries map, and the paper-forward honesty gate.
 
 **Guiding rule:** every deterministic, auditable number comes from code; the LLM only
 writes prose over numbers that already exist. It invents nothing and never sets the verdict.
@@ -70,6 +72,40 @@ flowchart TD
 
 Full per-phase verdicts, tables, and honest caveats are in [RESULTS.md](RESULTS.md).
 
+## The app
+
+A local browser UI over the same serve/ops layer — `uv run python scripts/argus_web.py`,
+then open <http://127.0.0.1:8000>. Everything it shows is deterministic and firewalled: the
+model call, the display-only risk flags, and your own positions never mix.
+
+**Scan** — the ranked universe; click any name to drill in.
+
+![the scan view](docs/img/scan.png)
+
+**Ticker** — one name in full: the BUY/HOLD/AVOID call + a confidence chip, the price chart
+(hover for OHLCV), the exact SHAP drivers, fundamental signals, news, filings, your position,
+and a grounded local-LLM read.
+
+![the ticker view, with the chart hover tooltip](docs/img/ticker.png)
+
+**Book** — a personal scorecard: your holdings **and** watchlist scored as a same-day
+peer-rank snapshot (equal- and value-weighted), with distress exposure and concentration.
+A peer rank, never a portfolio forecast. *(screenshot uses demo holdings)*
+
+![the book / portfolio scorecard](docs/img/book.png)
+
+**Markets** — the model's top picks by theme and fine industry, sized by live market cap.
+
+![the markets view](docs/img/markets.png)
+
+**Paper** — the honesty gate: the frozen model's live, out-of-sample accuracy vs. what its
+backtest expected.
+
+![the paper-forward view](docs/img/paper.png)
+
+Screenshots are regenerated with `scripts/capture_screenshots.py` (headless Chromium via
+Playwright) against a throwaway instance seeded with demo data — no real portfolio is published.
+
 ## Status
 
 All five build phases are complete and each passed its go/no-go gate. The machinery now runs
@@ -84,8 +120,8 @@ research-grade validation, not a production-alpha claim.
 
 ```bash
 uv sync --extra dev        # .venv on Python 3.12 + deps
-uv sync --extra ui         # add Textual for the argus terminal UI
-uv run pytest -q           # 160 tests green (as of Phase 5)
+uv sync --extra web        # add FastAPI + uvicorn for the browser UI
+uv run pytest -q           # 290+ tests green
 ```
 
 Keys go in `.env` (gitignored): `STOCKSCAN_INTRINIO_KEY` and `STOCKSCAN_PRICE_PROVIDER=intrinio`
@@ -101,8 +137,8 @@ uv run python scripts/analyze.py AAPL [--as-of 2026-07-01]
 # ranked sector/market scan — deterministic table now, LLM narration lazy + cached
 uv run python scripts/scan.py
 
-# the argus terminal UI (needs the [ui] extra)
-uv run python scripts/argus.py
+# the argus web UI (needs the [web] extra) — then open http://127.0.0.1:8000
+uv run python scripts/argus_web.py
 
 # unattended operation: one nightly dispatcher (ingest → monitor → paper-forward)
 uv run python scripts/ops.py nightly       # or: health | monitor | paper | prices | fsds | universe
@@ -124,9 +160,12 @@ src/stockscan/            # the import package (name unchanged; the *project* is
   serve.py                # per-ticker serve path (train/serve parity by construction)
   narrate/                # cited-JSON LLM contract + grounding validator + materiality cache
   ops/                    # unattended operation: jobs, monitor, paper-forward, health, state, lock
-  tui/                    # the argus terminal UI (Textual)
-scripts/                  # runnable entry points (analyze, scan, argus, ops, run_phase{1,3}, …)
-tests/                    # 160 tests — start with the PIT guard
+  portfolio.py            # the book: aggregate holdings + watchlist (display-only, firewalled)
+  view/                   # read-mostly data facade (ArgusData) + shared helpers (verdict, squarify)
+  web/                    # the browser UI: FastAPI serve layer over the facade
+static/                   # the web front-end (index.html, app.js, charts.js, styles.css)
+scripts/                  # runnable entry points (analyze, scan, argus_web, ops, run_phase{1,3}, …)
+tests/                    # 290+ tests — start with the PIT guard
 data/  artifacts/         # gitignored: raw data, Parquet panel, model artifacts, ops state
 ```
 

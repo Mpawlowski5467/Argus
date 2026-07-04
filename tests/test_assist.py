@@ -92,14 +92,14 @@ def test_firewall_scan_flags_forbidden_import(tmp_path):
     (root / "model.py").write_text("from .newsmem import NewsStore\nx = 1\n")
     (root / "backtest.py").write_text("import stockscan.narrate as n\n")
     (root / "features.py").write_text("import pandas as pd\nfrom .concepts import w\n")  # clean
-    (root / "tui").mkdir()
-    (root / "tui" / "app.py").write_text("from ..newsmem import x\n")  # live-side, not protected
+    (root / "view").mkdir()
+    (root / "view" / "data.py").write_text("from ..newsmem import x\n")  # live-side, not protected
     v = firewall_scan(root)
     by_mod = {x["module"]: x["imports"] for x in v}
     assert by_mod.get("model") == ["newsmem"]
     assert by_mod.get("backtest") == ["narrate"]
     assert "features" not in by_mod          # clean core module
-    assert "tui" not in by_mod               # tui is live-side, not protected
+    assert "view" not in by_mod              # view is live-side, not protected
 
 
 def test_firewall_denylist_auto_covers_new_modules_and_allows_bridges(tmp_path):
@@ -120,7 +120,7 @@ def test_firewall_denylist_auto_covers_new_modules_and_allows_bridges(tmp_path):
 
 def test_real_codebase_firewall_is_intact():
     """The guarantee, enforced in CI: the signal/data core imports nothing from the
-    live-view/AI side (news, newsmem, narrate, assist, quote, tui)."""
+    live-view/AI side (news, newsmem, narrate, assist, quote, view, web)."""
     from stockscan.config import REPO_ROOT
     v = firewall_scan(REPO_ROOT / "src" / "stockscan")
     assert v == [], f"FIREWALL BREACH: {v}"

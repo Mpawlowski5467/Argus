@@ -24,13 +24,9 @@ dev = [
     "pytest>=8",
     "ruff>=0.6",
 ]
-# argus — the terminal UI (a thin viewer over the serve/ops layer). Optional so the
-# nightly ingestion/monitor machinery never needs it: `uv sync --extra ui`.
-ui = [
-    "textual>=0.80",
-]
-# argus — the web UI (a browser front-end over the same serve/ops layer, reusing the
-# ArgusData facade). Optional, like `ui`: `uv sync --extra web`.
+# argus — the web UI (a browser front-end over the serve/ops layer via the ArgusData
+# view facade). Optional so the nightly ingestion/monitor machinery never needs it:
+# `uv sync --extra web`.
 web = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.29",

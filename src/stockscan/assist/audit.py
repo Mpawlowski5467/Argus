@@ -24,8 +24,8 @@ from pathlib import Path
 # panel/feature. (profile/marketcap/themes are the live-view metadata layer — included
 # ahead of their merge so the auditor covers them the moment they land.)
 FORBIDDEN = frozenset({
-    "news", "newsmem", "narrate", "assist", "quote", "tui",
-    "profile", "marketcap", "themes",
+    "news", "newsmem", "narrate", "assist", "quote", "view", "web",
+    "profile", "marketcap", "themes", "portfolio",
 })
 # Orchestration boundaries that LEGITIMATELY bridge core <-> live-view: serve builds
 # the packet and narrates AFTER scoring; ops runs the monitor/news jobs; config is
