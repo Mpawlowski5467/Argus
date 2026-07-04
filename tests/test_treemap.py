@@ -1,6 +1,6 @@
-"""Pure tests for the squarified treemap layout + markup rasterizer."""
+"""Pure tests for the squarified treemap layout + the market-cap formatter."""
 
-from stockscan.tui.treemap import fmt_cap, render_treemap, squarify, tile_at, tile_boxes
+from stockscan.view.treemap import fmt_cap, squarify
 
 
 def _overlap(a, b) -> float:
@@ -36,34 +36,6 @@ def test_squarify_ignores_nonpositive_and_empty():
     assert squarify([]) == []
     assert squarify([0, None, -5]) == []
     assert len(squarify([10, 0, 5], 0, 0, 10, 10)) == 2   # only the positive values
-
-
-def test_render_treemap_smoke():
-    items = [{"ticker": "NVDA", "cap": 3e12, "decile": 10},
-             {"ticker": "AVGO", "cap": 1e12, "decile": 8},
-             {"ticker": "MU", "cap": 1.2e11, "decile": 4}]
-    out = render_treemap(items, width=40, height=12)
-    assert out.count("\n") == 11                     # 12 rows
-    assert "NVDA" in out and "AVGO" in out
-    assert "on #" in out                             # background color markup present
-
-
-def test_render_treemap_no_caps():
-    assert "no market-cap" in render_treemap([{"ticker": "X", "cap": None, "decile": 5}], 40, 10)
-
-
-def test_tile_boxes_and_hit_testing():
-    caps = [50, 30, 20]
-    boxes = tile_boxes(caps, 40, 20)
-    assert len(boxes) == 3
-    for b in boxes:                                  # boxes inside the grid
-        if b:
-            x0, y0, xe, ye = b
-            assert 0 <= x0 < xe <= 40 and 0 <= y0 < ye <= 20
-    b0 = boxes[0]                                     # center of tile 0 maps back to 0
-    assert tile_at(boxes, (b0[0] + b0[2]) // 2, (b0[1] + b0[3]) // 2) == 0
-    assert tile_at(boxes, 999, 999) is None          # off-grid -> nothing
-    assert tile_at([None], 0, 0) is None
 
 
 def test_fmt_cap_tiers():

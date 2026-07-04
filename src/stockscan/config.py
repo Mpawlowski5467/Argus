@@ -148,7 +148,9 @@ THEMES_DB_PATH = ARTIFACTS_DIR / "themes.sqlite"
 THEME_MIN_NAMES = 3                   # don't surface a theme with fewer tagged names
 
 # --- continuous operation (Phase 5, DESIGN.md §8) -------------------------------
-OPS_STATE_PATH = ARTIFACTS_DIR / "ops_state.sqlite"   # mutable ops state (SQLite)
+OPS_STATE_PATH = Path(os.environ.get(                 # mutable ops state (SQLite);
+    "STOCKSCAN_OPS_STATE_PATH", ARTIFACTS_DIR / "ops_state.sqlite"))  # own env knob so a
+# throwaway instance (e.g. docs screenshots) can point at a demo DB without touching real data.
 PAPER_DIR = ARTIFACTS_DIR / "paper_forward"           # append-only paper-forward store
 LOGS_DIR = DATA_DIR / "logs"                          # launchd job stdout/stderr
 MATRIX_CACHE_DIR = PARQUET_DIR / "matrix_cache"       # wide close/dv matrices (fast load)

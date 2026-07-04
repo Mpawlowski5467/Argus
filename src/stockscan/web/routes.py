@@ -19,8 +19,8 @@ from concurrent.futures import ThreadPoolExecutor
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 
-from ..tui.chart import verdict
-from ..tui.treemap import squarify
+from ..view.chart import verdict
+from ..view.treemap import squarify
 from . import convert
 from .state import STATE
 
@@ -231,6 +231,15 @@ def set_position(cik: int, body: dict):
 def remove_position(cik: int):
     _facade().remove_position(cik)
     return {"cik": cik, "removed": True}
+
+
+# -- portfolio scorecard: book-level aggregation of the user's holdings -------
+# DISPLAY-ONLY, firewalled. A same-day peer-rank snapshot of the book (equal- AND
+# value-weighted percentile, distress exposure, concentration) + the full holdings
+# list — never a portfolio forecast, never read into the score or paper book.
+@router.get("/scorecard")
+def scorecard():
+    return convert.jsonable(_facade().scorecard())
 
 
 # -- paper-forward ------------------------------------------------------------

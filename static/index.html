@@ -24,8 +24,8 @@
 
     <nav id="tabs">
       <div class="tab" data-view="scan">scan</div>
-      <div class="tab" data-view="ticker">ticker</div>
       <div class="tab" data-view="watch">watch</div>
+      <div class="tab" data-view="scorecard">book</div>
       <div class="tab" data-view="paper">paper</div>
       <div class="tab" data-view="markets">markets</div>
     </nav>
@@ -36,25 +36,22 @@
           <input id="search" placeholder="search the market — name or ticker" autocomplete="off" />
           <select id="sector"></select>
         </div>
-        <div class="scan-split">
-          <div class="scan-list">
-            <table class="grid" id="scan-table">
-              <thead><tr>
-                <th class="num">#</th><th>ticker</th><th>name</th><th>sector</th>
-                <th class="num">model</th><th class="num">dec</th><th class="num">fy</th>
-              </tr></thead>
-              <tbody></tbody>
-            </table>
-          </div>
-          <div class="scan-detail" id="scan-detail"><div class="muted">select a name to inspect →</div></div>
-        </div>
+        <table class="grid" id="scan-table">
+          <thead><tr>
+            <th class="num">#</th><th>ticker</th><th>name</th><th>sector</th>
+            <th class="num">model</th><th class="num">dec</th><th class="num">fy</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
       </section>
 
+      <!-- the stock-detail view: reached by clicking a name anywhere (no tab of its own) -->
       <section id="view-ticker" class="view" hidden>
-        <div id="tk-body" class="muted">select a name in scan (Enter) or search ( / ) to drill in</div>
+        <div id="tk-body" class="muted">select a name to drill in</div>
       </section>
 
       <section id="view-watch" class="view" hidden><div id="watch-body"></div></section>
+      <section id="view-scorecard" class="view" hidden><div id="scorecard-body" class="muted">loading …</div></section>
       <section id="view-paper" class="view" hidden><div id="paper-body"></div></section>
       <section id="view-markets" class="view" hidden><div id="markets-body" class="muted">loading …</div></section>
     </main>

@@ -1,9 +1,9 @@
-"""The view-data facade: turn the serve/ops layer into plain rows for the TUI.
+"""The view-data facade: turn the serve/ops layer into plain rows for the web UI.
 
 Heavy inputs (the ~11k-column price matrices, the frozen artifact, the ops DB)
 load ONCE into an :class:`ArgusData`; the scored cross-section is built once and
 reused across the scan and watch views. The row-shaping helpers are pure
-functions so they unit-test without Textual or a real data store.
+functions so they unit-test without a UI framework or a real data store.
 
 Nothing here trains or re-baselines. The only writes are watchlist/alert
 curation, delegated to :class:`~stockscan.ops.state.OpsState`.
@@ -175,39 +175,6 @@ def theme_market_rows(cross: pd.DataFrame, tags: dict, top_k: int = 6,
             out.append({"market": str(theme), "count": len(ciks), "picks": picks})
     out.sort(key=lambda m: m["count"], reverse=True)
     return out
-
-
-def render_market_detail(fund: dict | None, profile: dict | None, cap) -> str:
-    """Rich-markup detail card for a treemap tile: who + what + recent financials.
-
-    Everything comes from already-loaded data (the cross-section row + a cached
-    profile + the tile's live cap), so it renders instantly on hover."""
-    from .treemap import fmt_cap
-
-    if not fund:
-        return "[dim]hover a tile for company detail · click to open the full page[/dim]"
-    prof = profile or {}
-    loc = ", ".join(x for x in (prof.get("city"), prof.get("state")) if x)
-    head = f"[b]{fund['name']}[/b]  [cyan]{fund['ticker']}[/cyan]"
-    tags = [x for x in (prof.get("industry"), f"HQ {loc}" if loc else None) if x]
-    if tags:
-        head += "   [dim]" + " · ".join(tags) + "[/dim]"
-    lines = [head]
-    if prof.get("description"):
-        lines.append(f"[dim]{prof['description']}[/dim]")
-    fy = f"FY{fund['fy']}" if fund.get("fy") else ""
-    filed = f"· filed {fund['filed']}" if fund.get("filed") else ""
-    lines.append(
-        f"[dim]mkt cap[/dim] [b]{fmt_cap(cap) if cap else 'n/a'}[/b]   "
-        f"[dim]model[/dim] {fund['pct']}th [dim](decile {fund['decile']}/10)[/dim]   "
-        f"[dim]{fy} {filed}[/dim]")
-    if fund.get("metrics"):
-        segs = []
-        for m in fund["metrics"]:
-            rk = f" [dim]({m['rank']}th)[/dim]" if m.get("rank") is not None else ""
-            segs.append(f"{m['label']} [b]{m['value']}[/b]{rk}")
-        lines.append("[dim]recent financials ·[/dim]  " + "   ".join(segs))
-    return "\n".join(lines)
 
 
 # --- the loaded facade ----------------------------------------------------------
@@ -535,6 +502,36 @@ class ArgusData:
 
         with OpsState() as st:
             st.position_remove(int(cik))
+
+    def scorecard(self) -> dict:
+        """Book-level scorecard over the names the user tracks (DISPLAY-ONLY; firewalled).
+
+        Covers HELD positions (shares + cost) AND WATCHLIST-only names (followed, no
+        shares) — the latter get model standing / distress but no value / P&L. Joins
+        them onto the already-scored cross-section; value / P&L use the last close from
+        the loaded matrix (no live quota). Never touches the score, the paper book, or
+        any trade path."""
+        from ..ops.state import OpsState
+        from ..portfolio import scorecard as build_scorecard
+
+        with OpsState() as st:
+            positions = st.positions()
+            watchlist = st.watchlist()
+        held = {int(p["cik"]) for p in positions}
+        entries = list(positions)
+        for w in watchlist:                       # watched-but-not-held → no shares
+            if int(w["cik"]) not in held:
+                entries.append({"cik": int(w["cik"]), "shares": None,
+                                "cost_basis": None, "added_at": w.get("added")})
+        prices: dict[int, float] = {}
+        for e in entries:
+            cik = int(e["cik"])
+            col = self.data.ticker_map.get(cik)
+            if col and col in self.data.close.columns:
+                s = self.data.close[col].dropna()
+                if len(s):
+                    prices[cik] = float(s.iloc[-1])
+        return build_scorecard(entries, self._cross, prices, as_of=self.as_of)
 
     def ticker(self, query, as_of=None) -> dict:
         """Full per-name analysis (deterministic; template narration included)."""

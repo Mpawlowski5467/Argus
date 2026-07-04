@@ -36,7 +36,7 @@ class AppState:
 
     def _load(self) -> None:
         try:
-            from ..tui.data import ArgusData
+            from ..view.data import ArgusData
             adata = ArgusData.load()
         except Exception as exc:  # bind now — surface to the loader, don't crash the server
             self.error = f"{type(exc).__name__}: {exc}"

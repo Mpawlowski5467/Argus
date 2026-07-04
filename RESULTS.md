@@ -70,8 +70,8 @@ is a feature, a score, or a point-in-time input. `src/stockscan/assist/`.
   Advisory (fail-open) over narration output; never in the serve path.
 - **C · Firewall / look-ahead auditor** (`assist/audit.py`, `scripts/audit_firewall.py`)
   — a DETERMINISTIC import scan enforcing that the signal/data core imports nothing from
-  the live-view/AI side (`news`/`newsmem`/`narrate`/`assist`/`quote`/`tui` + the
-  `profile`/`marketcap`/`themes` metadata layer). Implemented as a DENYLIST: every
+  the live-view/AI side (`news`/`newsmem`/`narrate`/`assist`/`quote`/`view`/`web`/`portfolio`
+  + the `profile`/`marketcap`/`themes` metadata layer). Implemented as a DENYLIST: every
   `stockscan` module is core EXCEPT the live side and the sanctioned bridges
   (`serve`/`ops`/`config`), so a newly added model head (e.g. `distress`) is protected
   automatically — no list to maintain. Exact, cheap, CI-friendly (exit 1 on a breach)
@@ -132,7 +132,7 @@ takeaway is stripped of ALL numerals (`packet.news_context`). So the grounding g
 numeral domain stays the *fundamentals* packet: a fabricated figure is still caught even
 when a news summary contained that very number (a stripped-away "$873M" cannot re-enter via
 narration — regression-tested). Only a date's YEAR survives, via the `date` field. The raw
-article summary (the real numbers) lives in `news.sqlite` and the TUI, never in the packet.
+article summary (the real numbers) lives in `news.sqlite` and the live view, never in the packet.
 News is attached AFTER model scoring in `serve.analyze(..., news=)`, and `context` is
 excluded from the narration cache hash so live headlines never invalidate a cached read.
 
@@ -160,13 +160,13 @@ excluded from the narration cache hash so live headlines never invalidate a cach
 - **Ops** (`scripts/ops.py news [--no-llm] [--backfill PAGES]`): nightly watchlist-only
   ingest (idempotent, quota-capped by a 12h refetch throttle; light tier, heuristic under
   `--no-llm`), slotted into the nightly flow after `monitor`. Firewalled from the signal,
-  so a degraded price night does not gate it. Lazy on ticker-open in the TUI, cached in the
+  so a degraded price night does not gate it. Lazy on ticker-open in the web UI, cached in the
   store; a lazy heuristic placeholder is upgraded in place by the nightly LLM run.
   `--backfill PAGES` paginates history (Intrinio `next_page`) to SEED the memory so
   recall's "notable past" has depth on day one instead of accruing over weeks.
-- **TUI**: the ticker page's news section now shows the recalled memory (recent + notable,
-  with event-type badges); the `n` key runs the local model with the recalled news attached
-  (previously it silently produced only the template — now fixed).
+- **Web UI**: the ticker page's news section shows the recalled memory (recent + notable,
+  with event-type badges); the AI-read button runs the local model with the recalled news
+  attached (previously it silently produced only the template — now fixed).
 
 ## Deferred / accepted
 

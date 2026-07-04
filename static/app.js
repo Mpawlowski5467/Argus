@@ -77,12 +77,13 @@
   // -- view switching --------------------------------------------------------
   function switchView(v) {
     state.view = v;
-    ["scan", "ticker", "watch", "paper", "markets"].forEach(function (name) {
+    ["scan", "ticker", "watch", "scorecard", "paper", "markets"].forEach(function (name) {
       el("view-" + name).hidden = name !== v;
       var t = $('.tab[data-view="' + name + '"]'); if (t) t.classList.toggle("active", name === v);
     });
     if (v === "markets" && !state.marketsLoaded) Markets.load();
     if (v === "watch") Watch.load();
+    if (v === "scorecard") Scorecard.load();
     if (v === "paper") Paper.load();
   }
   Array.prototype.forEach.call(document.querySelectorAll(".tab"), function (t) {
@@ -103,7 +104,7 @@
           '%</td><td class="num">' + r.decile + '</td><td class="num muted">' + (r.fy || "—") + "</td></tr>";
       }).join("");
       Array.prototype.forEach.call(b.querySelectorAll("tr"), function (tr) {
-        tr.addEventListener("click", function () { Ticker.open(+tr.dataset.cik, true); });
+        tr.addEventListener("click", function () { Ticker.open(+tr.dataset.cik); });
       });
     },
     markSelected: function (cik) {
@@ -128,12 +129,13 @@
 
   // -- TICKER ----------------------------------------------------------------
   var Ticker = {
-    open: function (cik, inline) {
+    open: function (cik) {
       state.cik = cik;
-      state.detailTarget = inline ? "scan-detail" : "tk-body";
-      if (inline) { switchView("scan"); Scan.markSelected(cik); }
-      else switchView("ticker");
-      el(state.detailTarget).innerHTML = '<div class="muted">loading …</div>';
+      // remember where we came from so the detail view's ← back returns there
+      if (state.view && state.view !== "ticker") state.cameFrom = state.view;
+      state.detailTarget = "tk-body";
+      switchView("ticker");
+      el("tk-body").innerHTML = '<div class="muted">loading …</div>';
       api("/ticker/" + cik).then(function (res) {
         state.tk = { res: res, price: null, ohlc: null, quote: null, profile: null, events: null, news: null, watched: false, narr: null, position: null, posDraft: null };
         Ticker.render();
@@ -163,6 +165,8 @@
       var score = r.score != null ? r.score : model.score;
       var trained = r.trained_through || model.trained_through || m.trained_through;
       var h = [];
+      // ← back to wherever we opened this from (scan / watch / book / markets)
+      h.push('<div class="tk-nav"><button class="mini" id="tk-back">← back</button></div>');
       // header
       h.push('<div class="tk-head"><span class="name">' + esc(m.name) + '</span><span class="sep">·</span><span class="tk">' +
         esc(m.ticker || "") + '</span><span class="sep">·</span><span class="muted">' + esc(m.sector || "") + '</span>' +
@@ -170,10 +174,6 @@
       // verdict + confidence (how much to trust this call, from the model's OOS record)
       h.push('<div class="verdict-row"><span class="badge ' + (v.color || "dim") + '">' + esc(v.call || "N/A") +
         '</span><span class="reason">' + esc(v.reason || "") + "</span>" + Ticker.confidenceChip(r) + "</div>");
-      // AI read — surfaced right under the verdict (the grounded template shows
-      // immediately; the button upgrades to the local-model read; a dead LLM degrades
-      // back to the template and says so)
-      h.push(Ticker.aiReadBlock(t, r));
       // profile
       h.push(Ticker.profileBlock(t.profile));
       // price + live + chart
@@ -215,6 +215,10 @@
         });
         h.push("</tbody></table></div>");
       }
+      // AI read — the model's plain-English take, placed AFTER the quantitative
+      // breakdown (drivers + signals). The grounded template shows immediately; the
+      // button upgrades to the local-model read; a dead LLM degrades back and says so.
+      h.push(Ticker.aiReadBlock(t, r));
       // news + events
       h.push(Ticker.enrichBlock("news memory (Intrinio)", t.news, function (a) {
         return '<span class="date">' + esc(a.date) + "</span>  " + (a.event_type && a.event_type !== "other" ? '<span class="ev">' + esc(a.event_type) + "</span> " : "") +
@@ -297,7 +301,7 @@
         h += '<div class="price-line live">live <b>' + Number(q.last).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) +
           '</b> <span class="' + pctColor(q.chg_pct) + '">' + sign(q.chg_pct) + "</span> <span class=\"muted\">" + auto + "bid " + (q.bid || "—") + " · ask " + (q.ask || "—") + " · " + tm + "Z</span></div>";
       }
-      h += '<canvas class="chart" id="tk-chart"></canvas>';
+      h += '<div class="chart-wrap"><canvas class="chart" id="tk-chart"></canvas><div class="chart-tip" id="tk-tip" hidden></div></div>';
       h += '<div class="chart-tools"><span>' + state.chart + ' chart</span>' +
         '<button class="mini" id="btn-chart">switch</button>' +
         '<button class="mini" id="btn-live">&#8635; quote</button>' +
@@ -412,9 +416,9 @@
       h += '<div class="hp"><div class="hp-h">long term</div><div class="hp-body">' +
         '<div class="muted">No price target — the model makes one monthly cross-sectional call, not multi-year forecasts.</div>';
       if (t.narr && t.narr.narrative) {
-        h += '<div class="muted hp-hint">The local model\'s plain-English take is in the <b>AI read</b> at the top ↑ — an opinion, not a forecast.</div>';
+        h += '<div class="muted hp-hint">The local model\'s plain-English take is in the <b>AI read</b> below ↓ — an opinion, not a forecast.</div>';
       } else {
-        h += '<div class="muted hp-hint">Want the model\'s plain-English take? Use <b>Generate local-model read</b> in the AI read at the top ↑.</div>';
+        h += '<div class="muted hp-hint">Want the model\'s plain-English take? Use <b>Generate local-model read</b> in the AI read below ↓.</div>';
       }
       return h + "</div></div></div>";
     },
@@ -452,9 +456,11 @@
         var col = (t.price.summary && t.price.summary.chg_1y >= 0) ? Charts.colors.up : Charts.colors.down;
         Charts.line(cv, t.price.points, col);
       } else if (el("tk-chart")) { var c = cv.getContext("2d"); }
+      Charts.hover(cv, el("tk-tip"));   // crosshair + data tooltip on hover
     },
     wire: function () {
       Ticker.drawChart();
+      var bk = el("tk-back"); if (bk) bk.onclick = function () { switchView(state.cameFrom || "scan"); };
       var bc = el("btn-chart"); if (bc) bc.onclick = Ticker.toggleChart;
       var ws = el("wstar"); if (ws) ws.onclick = Ticker.toggleWatch;
       var bn = el("btn-narr"); if (bn) bn.onclick = Ticker.narrate;
@@ -607,6 +613,118 @@
         else { h.push('<table class="grid"><tbody>'); w.alerts.forEach(function (a) { h.push('<tr><td class="alert-star">' + (a.seen ? " " : "*") + '</td><td class="muted">' + esc((a.created || "").slice(0, 16)) + "</td><td>" + esc(a.kind) + "</td><td>" + esc(a.message) + "</td></tr>"); }); h.push("</tbody></table>"); }
         el("watch-body").innerHTML = h.join("");
         Array.prototype.forEach.call(document.querySelectorAll("#watch-table tbody tr"), function (tr) { tr.addEventListener("click", function () { Ticker.open(+tr.dataset.cik); }); });
+      });
+    },
+  };
+
+  // -- SCORECARD (your book) -------------------------------------------------
+  // Book-level view of holdings (DISPLAY-ONLY, firewalled). A same-day peer-rank
+  // snapshot — equal- AND value-weighted percentile, distress exposure, and
+  // concentration — with the full holdings list ALWAYS shown so no single number
+  // stands in for the distribution. Never a portfolio forecast.
+  var Scorecard = {
+    load: function () {
+      el("scorecard-body").innerHTML = '<div class="muted">loading …</div>';
+      api("/scorecard").then(Scorecard.render).catch(function (e) {
+        el("scorecard-body").innerHTML = '<div class="err">could not load the book — ' + esc(e.message || e) + "</div>";
+      });
+    },
+    stat: function (big, label) {
+      return '<div class="sc-stat"><div class="sc-big">' + big + '</div><div class="sc-lab">' + esc(label) + "</div></div>";
+    },
+    pctCell: function (p) { return p == null ? '<span class="muted">—</span>' : Math.round(p) + '<span class="muted">th</span>'; },
+    concentration: function (title, buckets) {
+      if (!buckets || !buckets.length) return "";
+      var byValue = buckets.some(function (b) { return b.weight_value != null; });
+      var h = ['<div class="section-h">' + esc(title) + " · by " + (byValue ? "position value" : "holding count") + "</div><div class=\"sc-conc\">"];
+      buckets.slice(0, 8).forEach(function (b) {
+        var w = byValue ? (b.weight_value || 0) : (b.weight_count || 0);
+        h.push('<div class="sc-crow"><span class="sc-cname">' + esc(b.name) + "</span>" +
+          '<span class="sc-cbar"><span class="sc-cfill" style="width:' + (w * 100).toFixed(1) + '%"></span></span>' +
+          '<span class="sc-cpct num">' + Math.round(w * 100) + '%</span><span class="sc-ccnt muted">' + b.count + " name" + (b.count === 1 ? "" : "s") + "</span></div>");
+      });
+      return h.join("") + "</div>";
+    },
+    render: function (sc) {
+      if (!sc || !sc.n_total) {
+        el("scorecard-body").innerHTML = '<div class="empty">Nothing tracked yet — star a stock to watch it (☆ on a ticker page), or add shares under <b>your position</b>. Watched names show here with their model standing; add shares to any to get value &amp; P/L.</div>';
+        return;
+      }
+      var h = [];
+      // lead: what this is + the honesty caveat (mirrors the ticker "honest panels")
+      h.push('<p class="paper-lead">Your book — the names you track (holdings + watchlist), as a <b>same-day peer-rank snapshot</b>' +
+        (sc.as_of ? " as of <b>" + esc(sc.as_of) + "</b>" : "") +
+        ". The model makes one monthly cross-sectional call, <b>not a portfolio forecast</b>. Every name is listed below, so no single number stands in for the spread.</p>");
+
+      // top-line stat cards
+      h.push('<div class="sc-stats">');
+      h.push(Scorecard.stat(sc.n_total + (sc.n_total === 1 ? " name" : " names"),
+        sc.n_owned + " held · " + sc.n_watch + " watching"));
+      h.push(Scorecard.stat(money(sc.total_value),
+        sc.n_owned ? "book value · " + sc.n_owned + " held" : "book value · add shares to value"));
+      var plc = sc.unrealized_pl == null ? "muted" : sc.unrealized_pl >= 0 ? "pos" : "neg";
+      h.push(Scorecard.stat('<span class="' + plc + '">' + plMoney(sc.unrealized_pl) + "</span>" +
+        (sc.unrealized_pl_pct != null ? ' <span class="sc-sub ' + plc + '">' + sign(sc.unrealized_pl_pct) + "</span>" : ""), "unrealized P/L"));
+      h.push("</div>");
+
+      // model standing — BOTH weightings, side by side
+      h.push('<div class="section-h">model standing · where your names rank vs. peers</div>');
+      h.push('<div class="sc-stats"><div class="sc-stat"><div class="sc-big">' + Scorecard.pctCell(sc.percentile_equal) +
+        '</div><div class="sc-lab">equal-weight · all tracked names</div></div>' +
+        '<div class="sc-stat"><div class="sc-big">' + Scorecard.pctCell(sc.percentile_value) +
+        '</div><div class="sc-lab">' + (sc.percentile_value == null ? "value-weight · add shares to enable" : "value-weighted · your holdings by size") + "</div></div></div>");
+      h.push('<div class="hp-reason">Both are shown on purpose — equal-weight treats every name the same; value-weight leans on where your money actually sits. A peer-rank percentile, not a return estimate.</div>');
+
+      // distress exposure (only when the risk head is loaded)
+      if (sc.distress && sc.distress.known) {
+        var d = sc.distress;
+        h.push('<div class="section-h">distress exposure · display-only risk flag, never a trade input</div>');
+        if (d.at_risk) {
+          h.push('<div class="sc-flags">' +
+            (d.count.high ? '<span class="badge red">' + d.count.high + " high</span>" : "") +
+            (d.count.elevated ? '<span class="badge yellow">' + d.count.elevated + " elevated</span>" : "") +
+            '<span class="badge dim">' + d.count.normal + " normal</span></div>");
+          if (d.value && (d.value.high || d.value.elevated)) {
+            h.push('<div class="hp-reason">' + money(d.value.high + d.value.elevated) +
+              " of book value sits in flagged names — learned P(distress / delist within ~12mo).</div>");
+          }
+        } else {
+          h.push('<div class="muted">No holdings flagged — all ' + d.count.normal + " rank normal on the distress head.</div>");
+        }
+      }
+
+      // concentration — value-weighted bars (falls back to count when unpriced)
+      h.push(Scorecard.concentration("industry concentration", sc.industry_concentration));
+
+      // the full tracked-names table (never hidden) — held names first, then watched
+      h.push('<div class="section-h">names · ' + sc.n_owned + " held, " + sc.n_watch + " watched</div>");
+      h.push('<table class="grid" id="sc-table"><thead><tr>' +
+        "<th>ticker</th><th>name</th><th>industry</th><th class=\"num\">shares</th>" +
+        "<th class=\"num\">value</th><th class=\"num\">model</th><th class=\"num\">dec</th><th>risk</th><th class=\"num\">P/L</th>" +
+        "</tr></thead><tbody>");
+      sc.holdings.slice().sort(function (a, b) { return (b.owned ? 1 : 0) - (a.owned ? 1 : 0); }).forEach(function (p) {
+        var flag = p.dflag && p.dflag !== "normal"
+          ? '<span class="' + (p.dflag === "high" ? "neg" : "warn") + '">' + esc(p.dflag) + "</span>"
+          : (p.in_universe ? '<span class="muted">—</span>' : '<span class="warn">' + esc(p.status) + "</span>");
+        var plc2 = p.unrealized_pl == null ? "muted" : p.unrealized_pl >= 0 ? "pos" : "neg";
+        var tag = p.owned ? "" : ' <span class="sc-tag">watch</span>';
+        h.push('<tr data-cik="' + p.cik + '">' +
+          '<td class="tk">' + esc(p.ticker) + tag + "</td>" +
+          "<td>" + esc(p.name || "—") + "</td>" +
+          '<td class="muted">' + esc(p.in_universe ? p.industry : "—") + "</td>" +
+          '<td class="num">' + (p.owned && p.shares != null ? p.shares.toLocaleString(undefined, { maximumFractionDigits: 4 }) : "—") + "</td>" +
+          '<td class="num">' + (p.value != null ? money(p.value) : "—") + "</td>" +
+          '<td class="num">' + (p.pct != null ? p.pct + "%" : "—") + "</td>" +
+          '<td class="num">' + (p.decile != null ? p.decile : "—") + "</td>" +
+          "<td>" + flag + "</td>" +
+          '<td class="num ' + plc2 + '">' + (p.unrealized_pl != null ? plMoney(p.unrealized_pl) : "—") + "</td>" +
+          "</tr>");
+      });
+      h.push("</tbody></table>");
+
+      el("scorecard-body").innerHTML = h.join("");
+      Array.prototype.forEach.call(document.querySelectorAll("#sc-table tbody tr"), function (tr) {
+        tr.addEventListener("click", function () { Ticker.open(+tr.dataset.cik); });
       });
     },
   };
