@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>stock scanner</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <!-- the mandala loader (self-contained; runs until data is ready) -->
+  <div id="loader"><iframe src="/argus-mandala.html" title="loading"></iframe></div>
+
+  <div id="app" hidden>
+    <header id="statusbar">
+      <span class="kv">as-of <b id="s-asof">—</b></span>
+      <span class="kv">fund <b id="s-fund">—</b></span>
+      <span class="kv">vintage <b id="s-vintage">—</b></span>
+      <span class="kv">nightly <b id="s-nightly">—</b></span>
+      <span class="kv">alerts <b id="s-alerts">—</b></span>
+      <span class="kv" id="btn-help" title="what am I looking at?" style="margin-left:auto;cursor:pointer">? help</span>
+      <span class="kv"><span id="btn-refresh" title="rescan the market" style="cursor:pointer">↻ refresh</span></span>
+    </header>
+
+    <nav id="tabs">
+      <div class="tab" data-view="scan">scan</div>
+      <div class="tab" data-view="ticker">ticker</div>
+      <div class="tab" data-view="watch">watch</div>
+      <div class="tab" data-view="paper">paper</div>
+      <div class="tab" data-view="markets">markets</div>
+    </nav>
+
+    <main>
+      <section id="view-scan" class="view">
+        <div class="scan-controls">
+          <input id="search" placeholder="search the market — name or ticker" autocomplete="off" />
+          <select id="sector"></select>
+        </div>
+        <div class="scan-split">
+          <div class="scan-list">
+            <table class="grid" id="scan-table">
+              <thead><tr>
+                <th class="num">#</th><th>ticker</th><th>name</th><th>sector</th>
+                <th class="num">model</th><th class="num">dec</th><th class="num">fy</th>
+              </tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div class="scan-detail" id="scan-detail"><div class="muted">select a name to inspect →</div></div>
+        </div>
+      </section>
+
+      <section id="view-ticker" class="view" hidden>
+        <div id="tk-body" class="muted">select a name in scan (Enter) or search ( / ) to drill in</div>
+      </section>
+
+      <section id="view-watch" class="view" hidden><div id="watch-body"></div></section>
+      <section id="view-paper" class="view" hidden><div id="paper-body"></div></section>
+      <section id="view-markets" class="view" hidden><div id="markets-body" class="muted">loading …</div></section>
+    </main>
+  </div>
+
+  <!-- "what am I looking at?" onboarding overlay (self-contained; opened by ? in the status bar) -->
+  <div id="help-overlay" hidden>
+    <div class="help-card" role="dialog" aria-modal="true" aria-label="What am I looking at?">
+      <button class="help-close" id="help-close" title="close (Esc)" aria-label="close">×</button>
+      <h2>What am I looking at?</h2>
+      <p class="help-lead">This tool scans the market with a <b>frozen</b> machine-learning model and ranks every
+        company against its peers. Here's how to read what you see.</p>
+
+      <h3>The five tabs</h3>
+      <ul class="help-list">
+        <li><b>scan</b> — the whole tradable market, ranked. Click a name to inspect it on the right.</li>
+        <li><b>ticker</b> — one company in depth: verdict, AI read, price, model drivers, signals, news.</li>
+        <li><b>watch</b> — names you're tracking, plus alerts when something changes.</li>
+        <li><b>paper</b> — how the frozen model is holding up out-of-sample vs. its backtest.</li>
+        <li><b>markets</b> — the top picks grouped by industry and theme, sized by market cap.</li>
+      </ul>
+
+      <h3>BUY · HOLD · AVOID</h3>
+      <p>The verdict is nothing more than the company's <b>cross-sectional percentile</b> — where its model
+        score lands among every scored name today:</p>
+      <ul class="help-list">
+        <li><span class="badge green">BUY</span> top quintile — <b>80th percentile and above</b>.</li>
+        <li><span class="badge yellow">HOLD</span> the middle — <b>40th up to just below the 80th</b>.</li>
+        <li><span class="badge red">AVOID</span> bottom of the pack — <b>below the 40th</b>.</li>
+      </ul>
+
+      <h3>Model signal · percentile · decile</h3>
+      <p>The <b>model signal</b> is a <b>relative rank</b>, not a predicted return or price target.
+        <b>Percentile</b> runs 0–100 (higher = ranked above more peers); <b>decile</b> buckets that into 1–10.
+        The <b>drivers</b> (SHAP) show exactly which fundamentals pushed the score up or down.</p>
+
+      <h3>The AI read</h3>
+      <p>The <b>AI read</b> near the top of a ticker is a <b>local language model's</b> plain-English opinion,
+        <b>grounded to that company's filing</b> (and, when available, recent news it explicitly attributes to a
+        source). It's an interpretation of the data — <b>not a price forecast</b>. If the local model isn't
+        running you'll see a <i>grounded template</i> instead; click <i>Generate local-model read</i> to run it.</p>
+
+      <p class="help-foot">Press <b>Esc</b> or click outside this box to close · <b>?</b> reopens it anytime.</p>
+    </div>
+  </div>
+
+  <script src="/charts.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

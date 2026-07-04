@@ -87,3 +87,26 @@ def test_book_transitions_idempotent(state):
     # re-entry after exit reactivates
     state.book_apply({1: "A"}, set(), "2026-08-31")
     assert set(state.book()) == {1, 2, 3}
+
+
+def test_positions_set_update_remove(state):
+    """Positions store: upsert (add-or-update in one call), list, hard remove.
+    Cost basis is personal live-view data — this store only round-trips it back."""
+    assert state.positions() == []
+    state.position_set(320193, 10, 150.0)          # add
+    state.position_set(320193, 25, 172.5)          # update: upsert, not a second row
+    rows = state.positions()
+    assert len(rows) == 1
+    assert (rows[0]["cik"], rows[0]["shares"], rows[0]["cost_basis"]) == (320193, 25, 172.5)
+    state.position_set(789019, 5, 400.0)           # a second name
+    assert {r["cik"] for r in state.positions()} == {320193, 789019}
+    state.position_remove(320193)                  # hard delete
+    assert [r["cik"] for r in state.positions()] == [789019]
+
+
+def test_positions_update_preserves_added_at(state):
+    """Re-saving a holding keeps the original added_at (mirrors watch_add)."""
+    state.position_set(1, 3, 10.0)
+    first = state.positions()[0]["added_at"]
+    state.position_set(1, 7, 12.0)
+    assert state.positions()[0]["added_at"] == first

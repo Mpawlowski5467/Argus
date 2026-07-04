@@ -69,6 +69,14 @@ create table if not exists book (
     exited_as_of text,
     active integer not null default 1
 );
+create table if not exists positions (
+    -- PERSONAL holdings the user records to see value & P/L. Live-view display data:
+    -- read back to the user only, NEVER an input to the score / paper book / backtest.
+    cik integer primary key,
+    shares real not null,
+    cost_basis real not null,
+    added_at text not null
+);
 """
 
 
@@ -142,6 +150,32 @@ class OpsState:
             "select cik, column, note, added from watchlist where active = 1 order by added"
         ).fetchall()
         return [{"cik": r[0], "column": r[1], "note": r[2], "added": r[3]} for r in rows]
+
+    # -- positions (PERSONAL holdings — DISPLAY-ONLY live-view; NEVER a signal input) --
+    def position_set(self, cik: int, shares: float, cost_basis: float) -> None:
+        """Upsert the user's holding (add or update in one call). ``cost_basis`` is
+        personal live-view data: it is stored to show value & P/L back to the user and
+        is never read into the score, the paper book, or the backtest. On-conflict keeps
+        the original ``added_at`` (mirrors ``watch_add`` preserving ``added``)."""
+        self._db.execute(
+            "insert into positions (cik, shares, cost_basis, added_at) values (?,?,?,?) "
+            "on conflict(cik) do update set shares = excluded.shares, "
+            "cost_basis = excluded.cost_basis",
+            (int(cik), float(shares), float(cost_basis), _utcnow()),
+        )
+        self._db.commit()
+
+    def position_remove(self, cik: int) -> None:
+        self._db.execute("delete from positions where cik = ?", (int(cik),))
+        self._db.commit()
+
+    def positions(self) -> list[dict]:
+        rows = self._db.execute(
+            "select cik, shares, cost_basis, added_at from positions order by added_at"
+        ).fetchall()
+        return [
+            {"cik": r[0], "shares": r[1], "cost_basis": r[2], "added_at": r[3]} for r in rows
+        ]
 
     # -- signal state (percentile-move detection) -----------------------------------
     def get_signal(self, cik: int) -> dict | None:

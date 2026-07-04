@@ -29,6 +29,12 @@ dev = [
 ui = [
     "textual>=0.80",
 ]
+# argus — the web UI (a browser front-end over the same serve/ops layer, reusing the
+# ArgusData facade). Optional, like `ui`: `uv sync --extra web`.
+web = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+]
 
 [build-system]
 requires = ["hatchling"]
