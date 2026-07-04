@@ -29,6 +29,7 @@ from .config import (
     MIN_PRICE,
     MIN_SECTOR_BUCKET,
 )
+from .confidence import load_calibration_optional, score_confidence
 from .distress import (
     DistressArtifact,
     distress_flag,
@@ -56,6 +57,9 @@ class ServeData:
     # OPTIONAL, FIREWALLED risk-flag head — display/alert ONLY, never a trade input; None
     # when no distress artifact is frozen (serve then behaves exactly as before).
     distress_artifact: DistressArtifact | None = None
+    # OPTIONAL, FIREWALLED confidence calibration (per-decile OOS hit-rate). Display-only;
+    # None when unbuilt (serve then behaves exactly as before).
+    confidence_calibration: dict | None = None
 
 
 def load_serve_data() -> ServeData:
@@ -75,6 +79,7 @@ def load_serve_data() -> ServeData:
         dv_med=dv.rolling(20, min_periods=10).median(),
         ticker_map=tmap,
         distress_artifact=load_distress_artifact_optional(),
+        confidence_calibration=load_calibration_optional(),
     )
 
 
@@ -144,6 +149,7 @@ def analyze(
     max_stale_days: int = MAX_STALE_DAYS,
     news=None,
     distress_artifact: DistressArtifact | None = None,
+    calibration: dict | None = None,
 ) -> dict:
     """End-to-end per-ticker analysis at ``as_of`` (default: latest price date).
 
@@ -159,11 +165,18 @@ def analyze(
     within the horizon), its cross-sectional percentile, and a flag — computed AFTER the
     return score is fixed, from the SAME ranks. It is a risk-flag for the human ONLY: it
     never enters the score/percentile/decile/drivers, the packet, or any trade rule.
+
+    ``calibration`` (optional): the FIREWALLED confidence calibration table. When present
+    (passed, or loaded into ``data``) it adds a ``confidence`` block — a 0-100 conviction
+    for the call, derived from the model's per-decile OOS hit-rate — computed AFTER the
+    score is fixed. Display-only: never a feature, never a trade input.
     """
     data = data or load_serve_data()
     artifact = artifact or load_artifact()
     distress_artifact = distress_artifact if distress_artifact is not None \
         else getattr(data, "distress_artifact", None)
+    calibration = calibration if calibration is not None \
+        else getattr(data, "confidence_calibration", None)
     cik, column = resolve_company(company, data.ticker_map)
     as_of = pd.Timestamp(as_of) if as_of is not None else data.close.index[-1]
 
@@ -259,6 +272,27 @@ def analyze(
     loc = idx.searchsorted(artifact.trained_through, side="right") - 1
     info_through = idx[min(loc + horizon, len(idx) - 1)] if loc >= 0 else artifact.trained_through
 
+    flags = {
+        "liquidity_pass": bool(row["liquidity_pass"]),
+        "filed_date": str(pd.Timestamp(row["filed_date"]).date()),
+        "available_date": str(pd.Timestamp(row["available_date"]).date()),
+        "staleness_days": int((as_of - row["available_date"]).days),
+        "price_date": str(pd.Timestamp(cross.attrs["price_date"]).date()),
+        "in_sample": bool(as_of <= info_through),
+    }
+
+    # FIREWALLED confidence read: derive a 0-100 conviction for this call from the frozen
+    # model's OOS track record (calibration) plus the decile/percentile/drivers/flags
+    # already fixed above. Display-only; degrades to None. Never a feature/score/trade input.
+    confidence = None
+    if calibration is not None:
+        try:
+            confidence = score_confidence(
+                decile, packet["model"]["percentile"], drivers, flags, calibration
+            )
+        except Exception:
+            confidence = None
+
     return {
         "as_of": as_of,
         "cik": cik,
@@ -269,6 +303,7 @@ def analyze(
         "percentile": packet["model"]["percentile"],
         "decile": decile,
         "distress": distress,   # FIREWALLED risk-flag (or None); never touches the signal
+        "confidence": confidence,  # FIREWALLED conviction read (or None); never touches the signal
         "narrative": result["narrative"],
         "reasoning": result.get("reasoning", ""),
         "citations": result.get("citations", []),
@@ -279,12 +314,5 @@ def analyze(
         "source": result["source"],
         "grounded": not violations,
         "grounding_violations": violations,
-        "flags": {
-            "liquidity_pass": bool(row["liquidity_pass"]),
-            "filed_date": str(pd.Timestamp(row["filed_date"]).date()),
-            "available_date": str(pd.Timestamp(row["available_date"]).date()),
-            "staleness_days": int((as_of - row["available_date"]).days),
-            "price_date": str(pd.Timestamp(cross.attrs["price_date"]).date()),
-            "in_sample": bool(as_of <= info_through),
-        },
+        "flags": flags,
     }

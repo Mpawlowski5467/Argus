@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "argus-web",
+      "runtimeExecutable": ".venv/bin/python",
+      "runtimeArgs": ["-m", "uvicorn", "stockscan.web.server:app", "--host", "127.0.0.1", "--port", "8023"],
+      "port": 8023
+    }
+  ]
+}

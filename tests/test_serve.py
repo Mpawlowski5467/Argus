@@ -228,3 +228,28 @@ def test_distress_head_is_display_only_and_firewalled(world, tmp_path):
     for k in ("score", "percentile", "decile", "ranks"):
         assert with_d[k] == without[k], k
     assert with_d["packet"] == without["packet"]             # nothing leaked into the packet
+
+
+# --- FIREWALLED confidence read: display-only, never touches the signal -------------
+
+def test_confidence_is_display_only_and_firewalled(world):
+    """With a calibration table attached, analyze() adds a `confidence` block but the
+    return score/percentile/decile/drivers/packet are byte-identical to a run without it."""
+    cal = {"deciles": {str(d): {
+        "hit_rate": 0.40 + 0.02 * d, "mean_excess": 0.0, "n": 1000,
+        "ci_low": 0.38, "ci_high": 0.62,
+    } for d in range(1, 11)}}
+
+    d = pd.Timestamp("2024-06-28")
+    with_c = analyze(7, as_of=d, data=world["data"], artifact=world["artifact"], calibration=cal)
+    without = analyze(7, as_of=d, data=world["data"], artifact=world["artifact"])
+
+    assert without["confidence"] is None                     # optional: absent when no table
+    cz = with_c["confidence"]
+    assert cz is not None and set(cz) >= {"score", "hit_rate", "n", "components"}
+    assert 0 <= cz["score"] <= 85
+
+    # THE FIREWALL: the traded signal cannot move because a conviction read was attached
+    for k in ("score", "percentile", "decile", "ranks"):
+        assert with_c[k] == without[k], k
+    assert with_c["packet"] == without["packet"]             # nothing leaked into the packet

@@ -514,6 +514,28 @@ class ArgusData:
             st.watch_add(int(cik), self.data.ticker_map.get(int(cik)))
             return True
 
+    # -- positions (PERSONAL holdings — DISPLAY-ONLY; NEVER an input to the signal) -----
+    def positions(self) -> list[dict]:
+        from ..ops.state import OpsState
+
+        with OpsState() as st:
+            return st.positions()
+
+    def set_position(self, cik: int, shares: float, cost: float) -> dict | None:
+        """Save the user's holding (personal live-view; firewalled from the score).
+        Returns the stored row so the browser can echo the persisted values."""
+        from ..ops.state import OpsState
+
+        with OpsState() as st:
+            st.position_set(int(cik), float(shares), float(cost))
+            return next((p for p in st.positions() if int(p["cik"]) == int(cik)), None)
+
+    def remove_position(self, cik: int) -> None:
+        from ..ops.state import OpsState
+
+        with OpsState() as st:
+            st.position_remove(int(cik))
+
     def ticker(self, query, as_of=None) -> dict:
         """Full per-name analysis (deterministic; template narration included)."""
         from ..serve import analyze

@@ -1,0 +1,265 @@
+"""The /api endpoints — thin wrappers: request → ArgusData method → JSON.
+
+Every handler is a sync ``def`` so Starlette runs the blocking, network-touching
+facade calls in its threadpool (never make these ``async def``).
+
+FIREWALL: the signal packet (/api/ticker) returns score/percentile/decile/
+drivers/verdict with ZERO live-view data. Profile, news, live quote, market cap
+and themes each have their own endpoint the browser fetches AFTER the packet.
+Nothing here may attach a live-view field to the ticker response. The user's
+saved position (shares + cost basis, /api/positions) is PERSONAL live-view data:
+it is stored and shown back to the user only, and is NEVER read into the score,
+the paper book, or any signal computation.
+"""
+
+from __future__ import annotations
+
+from concurrent.futures import ThreadPoolExecutor
+
+from fastapi import APIRouter, HTTPException
+from fastapi.responses import JSONResponse
+
+from ..tui.chart import verdict
+from ..tui.treemap import squarify
+from . import convert
+from .state import STATE
+
+router = APIRouter()
+
+
+def _facade():
+    """The loaded facade, or a 503 while the background load is still running."""
+    if STATE.status != "ready" or STATE.adata is None:
+        raise HTTPException(status_code=503, detail="loading")
+    return STATE.adata
+
+
+def _safe(fn, default):
+    """Live-view calls fail open — one dead vendor never 500s a page."""
+    try:
+        return fn()
+    except Exception:
+        return default
+
+
+# -- status (the loader's poll target) ---------------------------------------
+@router.get("/status")
+def status():
+    if STATE.status == "ready" and STATE.adata is not None:
+        return {"loading": False, "error": None, **STATE.adata.status()}
+    return JSONResponse({"loading": True, "error": STATE.error}, status_code=503)
+
+
+# -- scan / search / resolve --------------------------------------------------
+@router.get("/sectors")
+def sectors():
+    return _facade().sectors()
+
+
+@router.get("/scan")
+def scan(sector: str = "all"):
+    return _facade().scan(sector)
+
+
+@router.get("/search")
+def search(q: str = "", limit: int = 40):
+    return _facade().search(q, limit)
+
+
+@router.get("/resolve")
+def resolve(q: str):
+    hit = _facade().resolve(q)
+    if hit is None:
+        raise HTTPException(status_code=404, detail=f"no match for {q!r}")
+    return hit
+
+
+# -- ticker: the signal packet (no live-view) --------------------------------
+@router.get("/ticker/{cik}")
+def ticker(cik: int):
+    a = _facade()
+    try:
+        res = dict(a.ticker(cik))
+    except ValueError as exc:            # no 10-K / stale / illiquid — surface it
+        raise HTTPException(status_code=422, detail=str(exc))
+    res["verdict"] = verdict((res.get("percentile") or 0) / 100.0)
+    return convert.jsonable(res)
+
+
+@router.get("/price/{cik}")
+def price(cik: int):
+    pr = _facade().price(cik)
+    if pr is None:
+        return {"price": None}
+    return {
+        "column": pr.get("column"),
+        "points": convert.series_to_points(pr.get("series")),
+        "summary": convert.jsonable(pr.get("summary")),
+    }
+
+
+@router.get("/ohlc/{cik}")
+def ohlc(cik: int, tail: int = 252):
+    df = _facade().ohlc(cik, tail)
+    return {"ohlc": convert.ohlc_to_arrays(df)}
+
+
+# -- live-view enrichment (own endpoints, fail open) -------------------------
+@router.get("/events/{cik}")
+def events(cik: int):
+    a = _facade()
+    return convert.jsonable(_safe(lambda: a.events(cik), []))
+
+
+@router.get("/news/{cik}")
+def news(cik: int):
+    a = _facade()
+    return convert.jsonable(_safe(lambda: a.news(cik), []))
+
+
+@router.get("/profile/{cik}")
+def profile(cik: int):
+    a = _facade()
+    return _safe(lambda: a.profile(cik), None)
+
+
+@router.get("/live/quote/{cik}")
+def live_quote(cik: int, refresh: bool = False):
+    a = _facade()
+    return convert.jsonable(_safe(lambda: a.live_quote(cik, refresh=refresh), None))
+
+
+@router.get("/market-cap/{cik}")
+def market_cap(cik: int):
+    a = _facade()
+    return {"cik": cik, "cap": convert.jsonable(_safe(lambda: a.market_cap(cik), None))}
+
+
+@router.post("/market-caps")
+def market_caps(body: dict):
+    a = _facade()
+    ciks = list(dict.fromkeys(body.get("ciks", [])))   # dedupe, keep order
+
+    def one(cik):
+        try:
+            return cik, a.market_cap(int(cik))
+        except Exception:
+            return cik, None
+
+    caps: dict = {}
+    if ciks:
+        with ThreadPoolExecutor(max_workers=6) as ex:
+            for cik, cap in ex.map(one, ciks):
+                caps[str(cik)] = convert.jsonable(cap)
+    return {"caps": caps}
+
+
+# -- markets ------------------------------------------------------------------
+@router.get("/markets")
+def markets(top_k: int = 6):
+    a = _facade()
+    return {
+        "themes": _safe(lambda: a.theme_markets(top_k), []),
+        "industries": a.markets(top_k),
+    }
+
+
+# treemap drill-in: one market's names sized by live cap, packed by squarify.
+# ``kind`` is "theme" | "ind"; query params so names with spaces/slashes work.
+_MAP_ASPECT = 2.3   # squarify in a wide box so tiles stay near-square in the browser
+
+
+@router.get("/market")
+def market(kind: str, name: str, top: int = 18):
+    a = _facade()
+    cons = _safe(lambda: a.market_constituents(kind, name), [])
+
+    def one(it):
+        try:
+            return {**it, "cap": a.market_cap(int(it["cik"]))}
+        except Exception:
+            return {**it, "cap": None}
+
+    items = []
+    if cons:
+        with ThreadPoolExecutor(max_workers=6) as ex:
+            items = [it for it in ex.map(one, cons) if it.get("cap")]
+    items.sort(key=lambda it: it["cap"], reverse=True)
+    items = items[:top]
+
+    rects = squarify([it["cap"] for it in items], 0.0, 0.0, _MAP_ASPECT, 1.0)
+    tiles = []
+    for it, (x, y, w, h) in zip(items, rects):
+        tiles.append({
+            "cik": it["cik"], "ticker": it["ticker"], "name": it.get("name"),
+            "pct": it.get("pct"), "decile": it.get("decile"), "cap": it["cap"],
+            "x": x / _MAP_ASPECT, "y": y, "w": w / _MAP_ASPECT, "h": h,   # normalized 0..1
+        })
+    return {"kind": kind, "name": name, "aspect": _MAP_ASPECT, "tiles": convert.jsonable(tiles)}
+
+
+# -- watchlist ----------------------------------------------------------------
+@router.get("/watch")
+def watch():
+    return convert.jsonable(_facade().watch())
+
+
+@router.get("/watch/{cik}")
+def is_watched(cik: int):
+    return {"cik": cik, "watched": bool(_facade().is_watched(cik))}
+
+
+@router.post("/watch/{cik}/toggle")
+def toggle_watch(cik: int):
+    return {"cik": cik, "watched": bool(_facade().toggle_watch(cik))}
+
+
+# -- positions (PERSONAL holdings — DISPLAY-ONLY live-view; never a signal input) --
+@router.get("/positions")
+def positions():
+    return convert.jsonable(_facade().positions())
+
+
+@router.post("/positions/{cik}")
+def set_position(cik: int, body: dict):
+    shares = float(body.get("shares") or 0)
+    cost = float(body.get("cost") or 0)
+    return convert.jsonable(_facade().set_position(cik, shares, cost))
+
+
+@router.delete("/positions/{cik}")
+def remove_position(cik: int):
+    _facade().remove_position(cik)
+    return {"cik": cik, "removed": True}
+
+
+# -- paper-forward ------------------------------------------------------------
+@router.get("/paper")
+def paper():
+    return convert.jsonable(_facade().paper())
+
+
+# -- narration (slow / optional LLM) + refresh -------------------------------
+@router.post("/narrate/{cik}")
+def narrate(cik: int):
+    a = _facade()
+    try:
+        res = a.ticker(cik)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return convert.jsonable(_safe(lambda: a.narrate(res["packet"]), {"narrative": "", "tier": "?"}))
+
+
+# TODO(ask): a per-ticker grounded "ask" route — POST /ask/{cik} {question} — reusing the
+# narrate/LLM plumbing. Deferred deliberately: it must answer ONLY from the signal packet and
+# REFUSE (never fabricate) when the packet doesn't contain the answer, staying firewalled from
+# the signal like narrate does. That grounded-answer guard is a real feature, not a thin wrapper,
+# so it is out of scope for this UX pass. Do NOT ship a raw LLM Q&A here — it would fabricate.
+
+
+@router.post("/refresh")
+def refresh():
+    if STATE.status != "ready":
+        raise HTTPException(status_code=503, detail="loading")
+    STATE.refresh()
+    return {"ok": True}
