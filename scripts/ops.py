@@ -13,6 +13,7 @@
   uv run python scripts/ops.py paper freeze | log | compare
   uv run python scripts/ops.py paper retrain-record --reason "quarterly retrain 2026q3"
   uv run python scripts/ops.py health
+  uv run python scripts/ops.py digest              # overnight brief (local model, grounded)
   uv run python scripts/ops.py install-launchd [--dry-run] [--uninstall]
 
 ``nightly`` is the one entry the scheduler needs: prices -> FSDS (when a new
@@ -327,6 +328,7 @@ def main(argv=None) -> int:
     p.add_argument("--reason", default="", help="(retrain-record) why the retrain")
 
     sub.add_parser("health")
+    sub.add_parser("digest")
     p = sub.add_parser("install-launchd")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--uninstall", action="store_true")
@@ -340,6 +342,15 @@ def main(argv=None) -> int:
         print("stockscan health:")
         print(text)
         return code
+
+    if args.cmd == "digest":
+        from stockscan.assist.brief import build_brief_context, nightly_brief
+        from stockscan.narrate.llm import LocalLLM
+
+        with OpsState() as state:
+            ctx = build_brief_context(state)
+        print(nightly_brief(ctx, LocalLLM())["answer"])
+        return 0
 
     if args.cmd == "install-launchd":
         return install_launchd(dry_run=args.dry_run, uninstall=args.uninstall)

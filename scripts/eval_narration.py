@@ -13,6 +13,7 @@ import time
 
 import numpy as np
 
+from stockscan.assist.judge import judge_narration
 from stockscan.model import load_artifact
 from stockscan.narrate.ground import check_grounding
 from stockscan.narrate.llm import LocalLLM
@@ -48,6 +49,9 @@ def main() -> int:
     ap.add_argument("--news", type=int, default=0, metavar="K",
                     help="attach up to K live Intrinio headlines (number-free) as "
                          "narration context — the news-hardening acceptance gate")
+    ap.add_argument("--judge", action="store_true",
+                    help="also run the LLM faithfulness judge on each final narration "
+                         "(catches the paraphrase-level misses the guard can't)")
     args = ap.parse_args()
 
     print("loading data + artifact ...")
@@ -63,8 +67,8 @@ def main() -> int:
           f"with model {llm.model}\n")
 
     stats = {"first_pass_ok": 0, "retried_ok": 0, "fallback": 0,
-             "final_ungrounded": 0, "citation_fail": 0, "with_news": 0}
-    lat, first_violations = [], []
+             "final_ungrounded": 0, "citation_fail": 0, "with_news": 0, "judge_flagged": 0}
+    lat, first_violations, judge_notes = [], [], []
     for i, cik in enumerate(sample, 1):
         news = _live_news_context(data.ticker_map.get(cik), args.news) if args.news else None
         if news:
@@ -80,6 +84,12 @@ def main() -> int:
         nids = news_ids(r["packet"])
         cited_news = sum(1 for c in r["citations"]
                          if isinstance(c, dict) and c.get("id") in nids)
+
+        if args.judge and r["source"] == "llm":
+            jr = judge_narration(r["narrative"], r["packet"], llm)
+            if not jr["faithful"]:
+                stats["judge_flagged"] += 1
+                judge_notes.append((r["packet"]["meta"].get("ticker"), jr["issues"][:2]))
 
         # gate condition 1: zero fabricated numbers in the FINAL narration
         if check_grounding(r["narrative"], r["packet"]):
@@ -118,6 +128,11 @@ def main() -> int:
     if args.news:
         print(f"names with news context: {stats['with_news']}/{n} "
               f"(fabrication gate must hold WITH news present)")
+    if args.judge:
+        print(f"LLM judge flagged:       {stats['judge_flagged']}/{n} "
+              f"(paraphrase-level misses beyond the deterministic guard)")
+        for tick, issues in judge_notes[:6]:
+            print(f"  {tick}: {[i.get('type') + ':' + i.get('quote','')[:40] for i in issues]}")
     print(f"latency: mean {lat_a.mean():.1f}s  p50 {np.percentile(lat_a, 50):.1f}s  "
           f"p90 {np.percentile(lat_a, 90):.1f}s")
     print(f"projected COLD top-10 narration backfill: {lat_a.mean() * 10 / 60:.1f} min "
