@@ -378,17 +378,15 @@
         }
         h += "</div></div>";
       }
-      // 3 · LONG TERM — no number; the LLM narration, explicitly an opinion.
+      // 3 · LONG TERM — no number. The model's plain-English take is the SHARED AI read at
+      //     the top; point to it rather than duplicating the narrative or offering a second
+      //     button (both used to fire the SAME one /narrate call and show the text twice).
       h += '<div class="hp"><div class="hp-h">long term</div><div class="hp-body">' +
         '<div class="muted">No price target — the model makes one monthly cross-sectional call, not multi-year forecasts.</div>';
       if (t.narr && t.narr.narrative) {
-        h += '<div class="narr hp-narr">' + esc(t.narr.narrative) + "</div>" +
-          '<div class="muted" style="margin-top:4px">what to watch as a holder · narrative / opinion from the local model (' +
-          esc(t.narr.tier) + ") — not a forecast</div>";
+        h += '<div class="muted hp-hint">The local model\'s plain-English take is in the <b>AI read</b> at the top ↑ — an opinion, not a forecast.</div>';
       } else {
-        h += '<button class="mini" id="btn-pos-narr"' + (state.narrating === state.cik ? " disabled" : "") + ">" +
-          (state.narrating === state.cik ? "narrating …" : "what to watch as a holder") + "</button>" +
-          '<div class="muted hp-hint">runs the local-model narration · labeled opinion, not a forecast</div>';
+        h += '<div class="muted hp-hint">Want the model\'s plain-English take? Use <b>Generate local-model read</b> in the AI read at the top ↑.</div>';
       }
       return h + "</div></div></div>";
     },
@@ -436,7 +434,6 @@
       var ba = el("btn-auto"); if (ba) ba.onclick = Ticker.autolive;
       var ps = el("btn-pos-save"); if (ps) ps.onclick = Ticker.savePosition;
       var prm = el("btn-pos-remove"); if (prm) prm.onclick = Ticker.removePosition;
-      var pn = el("btn-pos-narr"); if (pn) pn.onclick = Ticker.narrate;
       var psh = el("pos-shares"); if (psh) psh.oninput = Ticker.onPosInput;
       var pco = el("pos-cost"); if (pco) pco.oninput = Ticker.onPosInput;
       Ticker.updatePL();
