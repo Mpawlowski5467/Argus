@@ -50,6 +50,46 @@ model: `price_features` defaults to False everywhere.
 
 ---
 
+# AI Assist Layer — Grounded Q&A, Judge, Firewall Auditor, Brief (2026-07-03)
+
+Four read-only AI helpers, all on the narration foundation and all on the SAME side of
+the firewall as news: they explain or review already-computed, deterministic data; none
+is a feature, a score, or a point-in-time input. `src/stockscan/assist/`.
+
+- **Shared core** (`assist/core.py`) — `grounded_answer(context, question, llm, system)`:
+  answer STRICTLY from a JSON context, with every numeral checked by the narration
+  grounding guard (`narrate.ground.check_grounding`). A fabricated figure → bounded
+  retry → **honest refusal** ("I can't answer that without guessing"), never a plausible
+  guess. Code owns the numbers; the model only frames them.
+- **A · Grounded ticker Q&A** (`assist/qa.py`, `scripts/ask.py`) — the narration made
+  interactive: "why is it ranked here?", "what's the news history?" answered from the
+  packet + recalled news, each answer re-grounded. `uv run python scripts/ask.py NFLX`.
+- **B · Faithfulness judge** (`assist/judge.py`, `eval_narration.py --judge`) — the
+  Phase-4-deferred LLM judge: flags the paraphrase-level misses the deterministic guard
+  can't (a signal named by synonym in the wrong direction, a news theme stated as fact).
+  Advisory (fail-open) over narration output; never in the serve path.
+- **C · Firewall / look-ahead auditor** (`assist/audit.py`, `scripts/audit_firewall.py`)
+  — a DETERMINISTIC import scan enforcing that the signal/data core imports nothing from
+  the live-view/AI side (`news`/`newsmem`/`narrate`/`assist`/`quote`/`tui` + the
+  `profile`/`marketcap`/`themes` metadata layer). Implemented as a DENYLIST: every
+  `stockscan` module is core EXCEPT the live side and the sanctioned bridges
+  (`serve`/`ops`/`config`), so a newly added model head (e.g. `distress`) is protected
+  automatically — no list to maintain. Exact, cheap, CI-friendly (exit 1 on a breach)
+  and asserted against the real tree in the suite, so a future leak fails CI. An optional
+  LLM diff review layers on for subtler look-ahead leaks. **Current tree (incl. main's
+  `distress` head): CLEAN.**
+- **D · Nightly brief** (`assist/brief.py`, `ops.py digest`) — turns the monitor's
+  overnight record (job deltas, alerts, paper-forward) into a short morning read,
+  grounded in those dicts so it can't invent a stat.
+
+The pattern throughout: the LLM is a read-only narrator/reviewer over deterministic data,
+and the same grounding discipline that protects narration now protects Q&A and the brief.
+Tests: **218 green** (+14): grounded-answer refusal, Q&A grounding, judge issue/fail-open,
+the firewall scan (fake-tree, denylist auto-cover, real-tree-intact assertion), brief
+context + grounding.
+
+---
+
 # News Memory & News-Aware Narration Verdict (2026-07-03)
 
 Narration can now "bring up the past" — reference recent and historically-material news
