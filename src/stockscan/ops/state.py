@@ -91,7 +91,14 @@ class OpsState:
         self._db = sqlite3.connect(str(self.path), timeout=30.0)
         self._db.execute("pragma journal_mode=wal")
         self._db.executescript(_SCHEMA)
+        self._migrate()
         self._db.commit()
+
+    def _migrate(self) -> None:
+        """Additive column migrations (create-table-if-not-exists can't add columns)."""
+        cols = {r[1] for r in self._db.execute("pragma table_info(signal_state)")}
+        if "distress" not in cols:   # FIREWALLED distress prob, for escalation alerts
+            self._db.execute("alter table signal_state add column distress real")
 
     def close(self) -> None:
         self._db.close()
@@ -180,18 +187,24 @@ class OpsState:
     # -- signal state (percentile-move detection) -----------------------------------
     def get_signal(self, cik: int) -> dict | None:
         row = self._db.execute(
-            "select percentile, decile, as_of from signal_state where cik = ?", (int(cik),)
+            "select percentile, decile, as_of, distress from signal_state where cik = ?",
+            (int(cik),),
         ).fetchone()
         if row is None:
             return None
-        return {"percentile": row[0], "decile": row[1], "as_of": row[2]}
+        return {"percentile": row[0], "decile": row[1], "as_of": row[2], "distress": row[3]}
 
-    def record_signal(self, cik: int, percentile: int, decile: int, as_of: str) -> None:
+    def record_signal(self, cik: int, percentile: int, decile: int, as_of: str,
+                      distress: float | None = None) -> None:
+        """Persist the latest signal. ``distress`` (FIREWALLED risk-flag prob) is stored
+        only so the monitor can alert on ESCALATION; it is never a trade input."""
         self._db.execute(
-            "insert into signal_state values (?,?,?,?,?) on conflict(cik) do update set "
+            "insert into signal_state (cik, percentile, decile, as_of, updated, distress) "
+            "values (?,?,?,?,?,?) on conflict(cik) do update set "
             "percentile = excluded.percentile, decile = excluded.decile, "
-            "as_of = excluded.as_of, updated = excluded.updated",
-            (int(cik), int(percentile), int(decile), str(as_of), _utcnow()),
+            "as_of = excluded.as_of, updated = excluded.updated, distress = excluded.distress",
+            (int(cik), int(percentile), int(decile), str(as_of), _utcnow(),
+             float(distress) if distress is not None else None),
         )
         self._db.commit()
 

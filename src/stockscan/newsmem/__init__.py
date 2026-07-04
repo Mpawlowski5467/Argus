@@ -13,10 +13,17 @@ the panel — timestamps exist only so it COULD be made point-in-time later.
 
 from .curate import credibility, curate, is_good
 from .extract import EXTRACT_VERSION, extract_article, heuristic_extraction
-from .ingest import ingest_company_news, ingest_watchlist
+from .ingest import (
+    backfill_company_news,
+    backfill_watchlist,
+    ingest_company_news,
+    ingest_watchlist,
+    watchlist_targets,
+)
 from .store import NewsStore
 
 __all__ = [
     "NewsStore", "EXTRACT_VERSION", "extract_article", "heuristic_extraction",
     "curate", "credibility", "is_good", "ingest_company_news", "ingest_watchlist",
+    "backfill_company_news", "backfill_watchlist", "watchlist_targets",
 ]

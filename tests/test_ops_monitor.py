@@ -4,6 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from stockscan.distress import fit_distress, load_distress_artifact, save_distress_artifact
 from stockscan.features import FEATURES
 from stockscan.fundamental_panel import build_fundamental_panel, prepare_features
 from stockscan.model import fit, load_artifact, save_artifact
@@ -105,6 +106,54 @@ def test_percentile_move_alert(world, tmp_path):
         moves = [a for a in state.alerts(unseen_only=False) if a["kind"] == "percentile_move"]
         assert len(moves) == 1
         assert state.get_signal(1)["percentile"] == real  # updated to the real pct
+
+
+def _data_with_distress(world, tmp_path):
+    """world['data'] plus a FIREWALLED distress artifact. Fabricated ~50% labels give a
+    signal-free model that scores broadly high — enough to exercise the alert plumbing."""
+    raw = world["raw"]
+    close, dv = _prices()
+    tmap = {cik: f"T{cik}" for cik in range(1, 46)}
+    panel = build_fundamental_panel(
+        raw, close, delistings=None, ticker_map=tmap, dollar_volume=dv,
+        min_dollar_volume=MIN_DV, horizon=HORIZON, min_names=5)
+    panel = panel.copy()
+    panel["y"] = (np.arange(len(panel)) % 2).astype(float)
+    panel.attrs["censor_date"] = panel["date"].max()
+    panel.attrs["horizon_months"] = 12
+    dmodel = fit_distress(panel, params=dict(n_estimators=15, min_child_samples=5))
+    dart = load_distress_artifact(save_distress_artifact(dmodel, panel, out_dir=tmp_path / "d"))
+    return ServeData(feats=prepare_features(raw), close=close,
+                     dv_med=dv.rolling(20, min_periods=10).median(), ticker_map=tmap,
+                     distress_artifact=dart)
+
+
+def test_distress_escalation_alerts_once_then_stays_quiet(world, tmp_path):
+    data = _data_with_distress(world, tmp_path)
+    with OpsState(tmp_path / "s.sqlite") as state:
+        state.watch_add(1, "T1")
+        state.record_signal(1, 50, 5, "2024-08-30", distress=0.0)  # prior = normal
+        # first run: distress crosses UP from normal -> a single distress_risk alert
+        run_monitor(state, data=data, artifact=world["artifact"],
+                    narrate=False, edgar=False, as_of="2024-09-30")
+        d1 = [a for a in state.alerts(unseen_only=False) if a["kind"] == "distress_risk"]
+        assert len(d1) == 1
+        assert state.get_signal(1)["distress"] is not None      # level now recorded
+        # a second identical run is NOT a new escalation -> no repeat alert
+        run_monitor(state, data=data, artifact=world["artifact"],
+                    narrate=False, edgar=False, as_of="2024-09-30")
+        d2 = [a for a in state.alerts(unseen_only=False) if a["kind"] == "distress_risk"]
+        assert len(d2) == 1
+
+
+def test_distress_alert_suppressed_when_degraded(world, tmp_path):
+    data = _data_with_distress(world, tmp_path)
+    with OpsState(tmp_path / "s.sqlite") as state:
+        state.watch_add(1, "T1")
+        state.record_signal(1, 50, 5, "2024-08-30", distress=0.0)
+        run_monitor(state, data=data, artifact=world["artifact"], narrate=False,
+                    edgar=False, as_of="2024-09-30", alerts_ok=False)
+        assert [a for a in state.alerts(unseen_only=False) if a["kind"] == "distress_risk"] == []
 
 
 def test_alerts_suppressed_when_degraded(world, tmp_path):

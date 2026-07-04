@@ -40,6 +40,31 @@ def test_signal_state_roundtrip(state):
     assert (sig["percentile"], sig["decile"], sig["as_of"]) == (70, 7, "2026-07-01")
 
 
+def test_signal_state_carries_firewalled_distress(state):
+    state.record_signal(1, 85, 9, "2026-06-30")            # no distress passed -> None
+    assert state.get_signal(1)["distress"] is None
+    state.record_signal(1, 85, 9, "2026-07-01", distress=0.041)
+    assert state.get_signal(1)["distress"] == pytest.approx(0.041)
+
+
+def test_signal_state_migrates_old_db_without_distress_column(tmp_path):
+    """An ops DB created before the distress column must gain it on next open."""
+    import sqlite3
+
+    path = tmp_path / "old.sqlite"
+    con = sqlite3.connect(path)
+    con.executescript(
+        "create table signal_state (cik integer primary key, percentile integer, "
+        "decile integer, as_of text, updated text);"
+    )
+    con.commit()
+    con.close()
+
+    with OpsState(path) as st:                              # _migrate adds the column
+        st.record_signal(7, 50, 5, "2026-07-01", distress=0.09)
+        assert st.get_signal(7)["distress"] == pytest.approx(0.09)
+
+
 def test_add_filings_returns_only_news(state):
     rows = [
         {"cik": 1, "form": "10-K", "filed_date": "2026-02-01",

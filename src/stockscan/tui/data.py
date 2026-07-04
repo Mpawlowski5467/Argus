@@ -84,11 +84,18 @@ def watch_rows(watchlist: list[dict], cross: pd.DataFrame,
             r = by_cik.loc[cik]
             pct = int(round(float(r["pct"]) * 100))
             prev_pct = prev.get("percentile")
+            # FIREWALLED distress flag (display only): surface elevated/high risk here so a
+            # watched name drifting toward failure is visible; it drives no trade action.
+            dflag = r.get("dflag") if "dflag" in cross.columns else None
+            flag = None
+            if dflag in ("elevated", "high"):
+                dp = float(r["dprob"]) if pd.notna(r.get("dprob")) else None
+                flag = f"⚠ distress {dflag}" + (f" (P≈{dp * 100:.0f}%)" if dp is not None else "")
             rows.append({
                 "cik": cik, "ticker": str(w.get("column") or r.get("ticker") or "—"),
                 "pct": pct, "decile": _decile(float(r["pct"])),
                 "delta": (pct - prev_pct) if prev_pct is not None else None,
-                "last_filing": last_filing, "flag": None,
+                "last_filing": last_filing, "flag": flag,
             })
         else:
             rows.append({
@@ -238,6 +245,14 @@ class ArgusData:
         cross = build_cross_section(self.data, self.as_of).reset_index(drop=True)
         cross["score"] = self.artifact.score(cross)
         cross["pct"] = cross["score"].rank(pct=True)
+        # FIREWALLED distress risk-flag: a second read on the SAME ranks, for display only
+        # (never touches score/pct/decile or any trade path). Absent artifact -> no column.
+        dart = getattr(self.data, "distress_artifact", None)
+        if dart is not None:
+            from ..distress import distress_flag
+
+            cross["dprob"] = dart.score(cross)
+            cross["dflag"] = [distress_flag(p) for p in cross["dprob"]]
         self._cross = cross
 
     # -- view data ---------------------------------------------------------------

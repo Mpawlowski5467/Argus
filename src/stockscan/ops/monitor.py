@@ -111,10 +111,13 @@ def run_monitor(
 ) -> dict:
     """One monitoring pass. Returns the deltas dict for the job log."""
     from ..config import PAPER_DIR
+    from ..distress import distress_flag
     from ..model import MODEL_DIR, load_artifact
     from ..narrate.cache import NarrationCache, narrate_smart
     from ..serve import analyze, load_serve_data
     from .paper import artifact_fingerprint, current_vintage
+
+    _LEVEL = {"normal": 0, "elevated": 1, "high": 2}
 
     paper_dir = paper_dir if paper_dir is not None else PAPER_DIR
     model_dir = model_dir if model_dir is not None else MODEL_DIR
@@ -174,6 +177,7 @@ def run_monitor(
             continue
 
         pct = int(res["percentile"])
+        dz = res.get("distress")   # FIREWALLED risk-flag block (or None)
         prev = state.get_signal(cik)
         if alerts_ok:
             if prev is not None and abs(pct - prev["percentile"]) >= pctile_threshold:
@@ -187,7 +191,27 @@ def run_monitor(
                              "decile": res["decile"]},
                 )
                 deltas["alerts"] += 1
-            state.record_signal(cik, pct, res["decile"], str(as_of.date()))
+            # distress escalation: alert only when the risk-flag crosses UP a level between
+            # runs (never every night, never on de-escalation, and — like the percentile
+            # alert — never on first sight; the first pass records the level silently). A
+            # watchlist convenience: the flag is display/monitoring only and drives no trade
+            # action (RESULTS.md overlay gate). The TUI already shows a newly-watched name's
+            # current level, so the alert is reserved for genuine changes over time.
+            if dz is not None and prev is not None:
+                prev_prob = prev.get("distress")
+                prev_lvl = distress_flag(prev_prob) if prev_prob is not None else "normal"
+                if _LEVEL[dz["flag"]] > _LEVEL[prev_lvl] and dz["flag"] != "normal":
+                    state.add_alert(
+                        "distress_risk",
+                        f"cik {cik} ({res['column'] or 'no column'}): distress-risk flag "
+                        f"{prev_lvl} -> {dz['flag']} (P≈{dz['prob'] * 100:.1f}% within "
+                        f"{dz['horizon_months']}mo) [risk-flag only, not a trade signal]",
+                        cik=cik,
+                        payload={"from": prev_lvl, "to": dz["flag"], "prob": dz["prob"]},
+                    )
+                    deltas["alerts"] += 1
+            state.record_signal(cik, pct, res["decile"], str(as_of.date()),
+                                distress=(dz["prob"] if dz else None))
 
         if narrate:
             # scan.py's pattern: the packet from analyze(llm=None) carries the

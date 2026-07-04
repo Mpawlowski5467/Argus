@@ -197,3 +197,34 @@ def test_resolve_company_forms(world):
     assert resolve_company("DEAD~45", tmap) == (45, "DEAD~45")
     assert resolve_company(45, tmap) == (45, "DEAD~45")
     assert resolve_company("45", tmap) == (45, "DEAD~45")
+
+
+# --- FIREWALLED distress risk-flag: display-only, never touches the signal ---------
+
+def test_distress_head_is_display_only_and_firewalled(world, tmp_path):
+    """With a distress artifact attached, analyze() adds a `distress` block but the
+    return score/percentile/decile/drivers/packet are byte-identical to a run without it."""
+    from stockscan.distress import fit_distress, load_distress_artifact, save_distress_artifact
+
+    dp = world["panel"].copy()
+    dp["y"] = (dp["cik"] == 45).astype(float)     # the delisting name is the positive
+    dp.attrs["censor_date"] = dp["date"].max()
+    dp.attrs["horizon_months"] = 12
+    dmodel = fit_distress(dp, params=dict(n_estimators=15, min_child_samples=5))
+    dart = load_distress_artifact(save_distress_artifact(dmodel, dp, out_dir=tmp_path / "d"))
+
+    d = pd.Timestamp("2024-06-28")
+    with_d = analyze(7, as_of=d, data=world["data"], artifact=world["artifact"],
+                     distress_artifact=dart)
+    without = analyze(7, as_of=d, data=world["data"], artifact=world["artifact"])
+
+    assert without["distress"] is None                       # optional: absent when no head
+    dz = with_d["distress"]
+    assert set(dz) >= {"prob", "percentile", "flag", "horizon_months"}
+    assert 0.0 <= dz["prob"] <= 1.0 and dz["flag"] in ("normal", "elevated", "high")
+    assert 0 <= dz["percentile"] <= 100 and dz["horizon_months"] == 12
+
+    # THE FIREWALL: the traded signal cannot move because a risk-flag was attached
+    for k in ("score", "percentile", "decile", "ranks"):
+        assert with_d[k] == without[k], k
+    assert with_d["packet"] == without["packet"]             # nothing leaked into the packet
