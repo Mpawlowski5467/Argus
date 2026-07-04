@@ -29,6 +29,11 @@ from .config import (
     MIN_PRICE,
     MIN_SECTOR_BUCKET,
 )
+from .distress import (
+    DistressArtifact,
+    distress_flag,
+    load_distress_artifact_optional,
+)
 from .edgar.tickers import cik_for
 from .features import compute_features
 from .fundamental_panel import add_sector_ranks, liquidity_mask, pit_snapshot, prepare_features
@@ -48,6 +53,9 @@ class ServeData:
     close: pd.DataFrame            # wide adjusted closes (columns = universe price columns)
     dv_med: pd.DataFrame           # 20d median dollar volume, same shape
     ticker_map: dict[int, str]     # cik -> price column (dead names are TICKER~CIK)
+    # OPTIONAL, FIREWALLED risk-flag head — display/alert ONLY, never a trade input; None
+    # when no distress artifact is frozen (serve then behaves exactly as before).
+    distress_artifact: DistressArtifact | None = None
 
 
 def load_serve_data() -> ServeData:
@@ -66,6 +74,7 @@ def load_serve_data() -> ServeData:
         close=close,
         dv_med=dv.rolling(20, min_periods=10).median(),
         ticker_map=tmap,
+        distress_artifact=load_distress_artifact_optional(),
     )
 
 
@@ -134,6 +143,7 @@ def analyze(
     min_dollar_volume: float = MIN_DOLLAR_VOLUME,
     max_stale_days: int = MAX_STALE_DAYS,
     news=None,
+    distress_artifact: DistressArtifact | None = None,
 ) -> dict:
     """End-to-end per-ticker analysis at ``as_of`` (default: latest price date).
 
@@ -143,9 +153,17 @@ def analyze(
     ``news`` (optional): recalled article takeaways for narration context ONLY
     (LIVE-VIEW). It rides into the packet AFTER scoring — the score/percentile/drivers
     above are already fixed by the time news is attached, so it cannot touch the signal.
+
+    ``distress_artifact`` (optional): the FIREWALLED distress-risk head. When present
+    (passed, or loaded into ``data``) it adds a ``distress`` block — P(distress-delist
+    within the horizon), its cross-sectional percentile, and a flag — computed AFTER the
+    return score is fixed, from the SAME ranks. It is a risk-flag for the human ONLY: it
+    never enters the score/percentile/decile/drivers, the packet, or any trade rule.
     """
     data = data or load_serve_data()
     artifact = artifact or load_artifact()
+    distress_artifact = distress_artifact if distress_artifact is not None \
+        else getattr(data, "distress_artifact", None)
     cik, column = resolve_company(company, data.ticker_map)
     as_of = pd.Timestamp(as_of) if as_of is not None else data.close.index[-1]
 
@@ -208,6 +226,28 @@ def analyze(
         "drivers": drivers,
     }
 
+    # FIREWALLED distress read: score the SAME cross-section with the distress head and
+    # attach the target's probability + peer percentile + flag. This happens AFTER the
+    # model block above is fully fixed and is NOT written into the packet — it is a
+    # display/alert risk-flag only, never a feature, never a trade input (verdict:
+    # RESULTS.md distress-overlay gate). Any scoring hiccup degrades to None, never breaks
+    # the return path.
+    distress = None
+    if distress_artifact is not None:
+        try:
+            dprob = pd.Series(distress_artifact.score(cross), index=cross.index)
+            target_dp = float(dprob.loc[hit.index[0]])
+            distress = {
+                "prob": round(target_dp, 4),
+                "percentile": int(round(float(dprob.rank(pct=True).loc[hit.index[0]]) * 100)),
+                "flag": distress_flag(target_dp),
+                "horizon_months": int(distress_artifact.meta.get("horizon_months", 12)),
+                "trained_through": distress_artifact.meta.get("trained_through"),
+                "n_names": int(len(cross)),
+            }
+        except (KeyError, ValueError):
+            distress = None
+
     result = narrate_packet(packet, llm=llm)
     violations = check_grounding(result["narrative"], packet)  # invariant 3, re-checked here
 
@@ -228,6 +268,7 @@ def analyze(
         "score": packet["model"]["score"],
         "percentile": packet["model"]["percentile"],
         "decile": decile,
+        "distress": distress,   # FIREWALLED risk-flag (or None); never touches the signal
         "narrative": result["narrative"],
         "reasoning": result.get("reasoning", ""),
         "citations": result.get("citations", []),

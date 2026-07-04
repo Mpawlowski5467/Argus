@@ -300,6 +300,17 @@ class TickerView(VerticalScroll):
             "",
             f"model signal  [b]{mm['percentile']}th pct[/b] · decile {mm['decile']}/10 "
             f"· score {mm['score']:+.4f} · trained through {mm['trained_through']}{insample}{liq}",
+        ]
+        dz = res.get("distress")
+        if dz:
+            dcol = {"high": "red", "elevated": "yellow"}.get(dz["flag"], "green")
+            out.append(
+                f"distress risk  [reverse {dcol}] {dz['flag'].upper()} [/reverse {dcol}]  "
+                f"[dim]P≈[/dim]{dz['prob'] * 100:.1f}% within {dz['horizon_months']}mo · "
+                f"{dz['percentile']}th pct of peers  [dim](risk-flag only — not in the "
+                f"score/trade)[/dim]"
+            )
+        out += [
             "",
             "[dim]drivers (SHAP — exact decomposition)[/dim]",
         ]
