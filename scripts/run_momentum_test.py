@@ -29,18 +29,14 @@ from stockscan.concepts import WIDE_PATH
 from stockscan.config import MIN_DOLLAR_VOLUME
 from stockscan.edgar.delistings import load_delistings
 from stockscan.features import FEATURES, compute_features
-from stockscan.fundamental_panel import build_fundamental_panel
+from stockscan.fundamental_panel import PRICE_FEATURES, build_fundamental_panel
 from stockscan.intrinio_universe import universe_ticker_map
 from stockscan.model import DEFAULT_PARAMS, RANK_COLS, evaluate
 from stockscan.panel import load_matrices_cached
 from stockscan.validation import cpcv_splits, ic_summary, rank_ic
 
 WINSOR = (0.01, 0.99)
-# Momentum-only arms. The shared PRICE_FEATURES registry now also carries reversal /
-# low-vol / amihud (see scripts/run_reversal_test.py), so this test names its momentum
-# columns explicitly rather than deriving them from PRICE_FEATURES.
-MOM_FEATURES = ["mom_12_1", "mom_6_1"]
-MOM_RANKS = [f"{f}_rank" for f in MOM_FEATURES]  # ["mom_12_1_rank", "mom_6_1_rank"]
+MOM_RANKS = [f"{f}_rank" for f in PRICE_FEATURES]  # ["mom_12_1_rank", "mom_6_1_rank"]
 
 ARMS = {
     "baseline (10 fundamentals)": RANK_COLS,
@@ -101,7 +97,7 @@ def main(argv=None) -> int:
 
     n_dates = panel["date"].nunique()
     print(f"panel: {len(panel):,} rows  dates={n_dates}  ~{len(panel) // n_dates} names/date")
-    for f in MOM_FEATURES:
+    for f in PRICE_FEATURES:
         cov = panel[f].notna().mean()
         print(f"  {f} coverage: {cov:.0%} of labeled rows")
 
@@ -113,9 +109,9 @@ def main(argv=None) -> int:
           f"-> {'orthogonal' if np.nanmean(np.abs(corrs)) < 0.1 else 'some overlap'}")
 
     print("\nsingle-feature rank IC (momentum standalone vs the fundamentals):")
-    for f in MOM_FEATURES + FEATURES:
+    for f in PRICE_FEATURES + FEATURES:
         s = ic_summary(rank_ic(panel, feature=f"{f}_rank"))
-        tag = "  <-- MOMENTUM" if f in MOM_FEATURES else ""
+        tag = "  <-- MOMENTUM" if f in PRICE_FEATURES else ""
         print(f"  {f:<20} IC={s['mean_ic']:+.4f}  t_nw={s['t_nw']:+.2f}{tag}")
 
     print("\nLightGBM walk-forward OOS (same panel, feature set varies):")

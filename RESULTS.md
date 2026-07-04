@@ -1,347 +1,52 @@
-# Distress-Risk Classifier Head Verdict (2026-07-03)
+# Momentum Feature Test — Real but Non-Additive (2026-07-03)
 
-A second, independent ML head — a LightGBM **classifier** that predicts the probability a
-company **distress-delists within the next 12 months** — now sits beside the return head.
-It reuses the same point-in-time fundamental ranks (`RANK_COLS`) and the same parity seam
-(`prepare_features → pit_snapshot → add_sector_ranks`), but a binary target and rare-event
-metrics instead of rank IC. It is **orthogonal to the return head** and upgrades the old
-rule-based `-0.70` distress haircut into a *learned* probability. Gate: keep only if it ranks
-distress out-of-sample — AUC well above 0.5 (aim ~0.75), precision @ top-decile many× the
-base rate, decent calibration, **AND** it survives CPCV, not one lucky split. **GATE: PASS.**
+Tested whether adding price momentum (12-1 and 6-1) to the fundamentals-only model
+improves the honest out-of-sample edge. DESIGN.md §4 lists momentum in the intended
+feature set, but it was never wired past the Phase-0 leakage toy. **Verdict: momentum
+is a real, orthogonal, PIT-clean standalone signal, but it does NOT improve the model
+— do NOT promote.** Same outcome as the 13-config feature salvage, for the same
+disciplined reason: it fails the model-level OOS/CPCV bar even though it looks good in
+isolation.
 
-Reproduce: `uv run python scripts/run_distress.py --save` (artifact → `artifacts/distress_model/`;
-the return artifact `artifacts/model/` is never touched). The head passed its ranking gate;
-an **offline trade-mechanics gate** (below) then found it doesn't belong in the traded book,
-so it ships as a **FIREWALLED display/alert risk-flag** (serve, TUI, monitor) — **never in the
-paper book, the score, or any trade rule.**
+`uv run python scripts/run_momentum_test.py` (no-impute, 450,586 rows, 182 dates,
+~2,475 names/date). Both arms scored on the SAME panel — momentum never filters rows,
+so the only thing that varies is the feature set.
 
-## Out-of-sample scorecard (fundamentals-only, natural prior, 12-month window)
+## Momentum clears every DATA bar
 
-Panel: **834,395 rows · 170 monthly dates · 2011-02 → 2025-03** (censored at the ledger edge
-2026-03-31 so no forward window is unobserved) · **base rate 2.0%** (16,661 distress positives)
-· ~4,908 names/date.
+| check | result |
+|---|---|
+| coverage (12-1 / 6-1) | 95% / 98% of labeled rows (floor is 70%) |
+| orthogonality to fundamentals | mean \|corr\| **0.046**, max 0.085 — genuinely independent |
+| standalone rank IC (12-1) | **+0.0257** (t_nw +2.26) — on par with leverage/accruals |
+| standalone rank IC (6-1) | +0.0194 (t_nw +2.05) |
 
-| metric | walk-forward (causal) | CPCV distribution (45 combos) |
-|---|---|---|
-| **ROC-AUC** | **0.703** | **mean 0.744**, std 0.019, min 0.709, p05 0.716, median 0.745, p95 0.776 |
-| AUC > 0.5 / > 0.7 across combos | — | **100% / 100%** |
-| PR-AUC (base rate 0.020) | 0.050 | mean 0.054 |
-| precision @ top-decile | **0.058 → 2.8× base** | — |
-| recall @ top-decile | 0.276 (top 10% of names holds ~28% of all failures) | — |
-| **calibration MAE** | **0.0071** (monotonic; top bin 0.058 predicted → 0.061 realized) | — |
+## …but fails the MODEL-level bar (the one that counts)
 
-The edge is not a single-split artifact: **every one of the 45 CPCV combinations clears
-AUC 0.70**, with a tight 0.019 spread. Walk-forward (past-only, causal) reads a bit lower
-than CPCV because the earliest 2011–13 folds train on little data; both are comfortably
-above the 0.5 null. The natural-prior probabilities are **directly calibrated** — no Platt/
-isotonic post-hoc step needed — so a predicted 6% distress chance really is ~6% realized.
-
-Feature importance reads as a **textbook distress signature**, which is the sanity check that
-it learned economics not noise: `roa` 15%, `op_margin` 14%, `roe` 13%, `current_ratio` 12%,
-`leverage` 9%, `cash_to_assets` 9%, `accruals` 8% — profitability + liquidity + leverage, the
-Altman/Ohlson variables. Highest-risk names at 2024-06 are SPAC acquisition corps (which
-routinely dissolve) and sub-scale micro-caps.
-
-## The honest part is the LABEL — reason alone is not "distress"
-
-EDGAR's ledger tags each death `delist` (Form 25) or `dereg` (Form 15), but **neither cleanly
-means distress**. Confirming against each security's own terminal price (survivorship-free
-Intrinio, by security id):
-
-- **Form 25 "delist": only 21% are price-confirmed collapses — ~79% are M&A** (the target is
-  acquired at/above market: median terminal price $11, median 1-yr return **+5%**).
-- **Form 15 "dereg": 63% collapse, but ~37% are premium going-private / LBO**, not distress.
-
-So we **price-confirm** distress: a death is a positive only if the stock actually cratered —
-a sub-$1 final print, **or** ≥70% below its own trailing-1yr high, **or** a >50% trailing-year
-loss into the delisting. A priced-but-uncollapsed death is a **benign negative** (a real
-acquisition — correctly *not* distress); a death we cannot price at all is **ambiguous and
-dropped** (~66/date), never guessed. Of 10,989 ledger events: **1,836 distress · 4,468 benign
-M&A/LBO · 4,685 unpriced**. Labeling on `reason` alone is not a stylistic choice — it costs
-real signal:
-
-| labeling | base rate | walk-forward AUC |
-|---|---|---|
-| **price-confirmed distress** (product) | 2.0% | **0.703** |
-| naive reason-only (M&A/LBO counted as distress) | 8.5% | 0.602 |
-
-Contaminating the positive class with healthy-looking acquisitions drags AUC down toward a
-coin flip: the fundamentals genuinely separate *distress*, not *"left the exchange"*.
-
-Robustness also holds across the two knobs that could have flattered it. **Horizon:**
-N=6mo AUC 0.733 (lift 3.2×), N=24mo AUC 0.727 (lift 2.7×) — the edge is stable, shorter
-windows sharper. **Class weighting:** `scale_pos_weight=balanced` *lowers* AUC to 0.682 and
-blows calibration MAE out to 0.204 (probabilities wildly overstated), so the artifact ships
-the natural prior — better ranking *and* honest probabilities.
-
-## Overlay backtest — does P(distress) belong in the traded book? (net-of-cost gate)
-
-`uv run python scripts/run_distress_overlay.py`. Ranking well is necessary but not
-sufficient to *trade* on it. On the SAME no-impute, liquidity-filtered tradable panel the
-return backtest uses — with BOTH the return score and P(distress) generated purged-walk-
-forward OOS (never the frozen artifact — that would be look-ahead) — the head is used as a
-**hard distress exit**: veto any long-book name whose P(distress) clears a threshold.
-
-**The signal is real inside the tradable book.** OOS, the top P(distress) decile averages
-**−2.26% forward 63-day excess** (vs +0.86% bottom) and a **realized 12-month death rate of
-1.64% vs 0.02%** — ~80× separation. So it does rank the failures.
-
-**But the long-side veto changes nothing:**
-
-| long-only book | net CAGR | Sharpe | maxDD |
-|---|---|---|---|
-| baseline (no veto) | +9.17% | 0.42 | −41.6% |
-| + distress veto (t = 0.03 … 0.12) | +9.15 … +9.18% | 0.42 | −41.5 … −41.9% |
-
-ΔSharpe ≈ 0.00 at every threshold. Two structural reasons: the distress base rate in the
-*tradable* universe is only **0.41%** (liquid names rarely die), and the return model's
-quality tilt (roa / leverage / current_ratio) **already keeps distress names out of the
-top-return decile** — the veto touches ~1% of names and the book is essentially unchanged.
-On the long side the two heads are redundant.
-
-**And shorting distress dies to borrow.** The −2.26% gross signal is strong, but distress
-names are precisely the illiquid, hard-to-borrow ones — under the project's borrow tiers
-(100–300 bps) and the `SHORT_MIN_ADV` filter, adding a high-distress short sleeve takes the
-book from net CAGR **+11.1% → −0.5%** and Sharpe **+0.58 → −0.03** (ΔSharpe −0.61). Textbook
-short-alpha-dies-after-borrow, exactly the failure mode §6's borrow realism exists to catch.
-
-**Verdict: do NOT wire the distress head into the traded book.** It is a genuine early-
-warning signal but not monetizable through this strategy's mechanics — its home is a
-**monitoring / risk-flag layer** (surface P(distress) so a human sidesteps the value traps),
-not a trade overlay or the `-0.70` haircut's replacement. *(Aside: tilting the long book
-toward LOW distress risk on its own lifts Sharpe 0.42 → 0.58 at lower vol — a standalone
-safety factor, but a different book from the return-alpha one, not an improvement to it.)*
-This mirrors the momentum / reversal outcomes: a real, PIT-clean signal that does not beat
-the incumbent through honest trading mechanics → **do not promote to the book.**
-
-## Firewalled display / alert layer (built — the signal's actual home)
-
-Since the head ranks failures well but can't be *traded* here, it ships as a **risk-flag
-for the human**, wired exactly like the news layer's firewall: computed AFTER the return
-score is fixed, from the SAME ranks, and **never written into the score, percentile, decile,
-drivers, the packet, the paper book, or any trade rule** (enforced by a byte-identical
-firewall test — attaching the head cannot move the traded signal). It is entirely optional:
-absent a frozen distress artifact, every path behaves exactly as before.
-
-- **`serve.analyze`** attaches a `distress` block — `P(distress-delist within 12mo)`, the
-  target's percentile among its peers, and a `high | elevated | normal` flag (thresholds
-  0.08 / 0.03, anchored to the head's calibration). The artifact loads once into `ServeData`
-  (best-effort; `None` if absent). Live read: AAPL → 0.7% *normal*; Ford → 3.6% *elevated*
-  (83rd pct); across the 2,961-name liquid cross-section, 82 *high* / 545 *elevated*.
-- **TUI** — the ticker page shows a distress line under the model signal (flag + probability
-  + peer percentile, tagged *risk-flag only — not in the score/trade*); the watchlist marks
-  an elevated/high name with `⚠ distress <level>`.
-- **Monitor** — a `distress_risk` alert fires only when a watched name's flag crosses UP a
-  level *between* runs (never every night, never on first sight — like the percentile alert);
-  the level is persisted in `signal_state.distress` (additive SQLite migration) purely for
-  that escalation check. Suppressed on degraded-price nights alongside the other alerts.
-
-## What was built (`src/stockscan/distress.py`, `scripts/run_distress.py`, `scripts/run_distress_overlay.py`)
-
-- **`classify_distress_events`** — tags each ledger death `is_distress ∈ {True, False, None}`
-  via the price-confirmation rule above (thresholds are params + recorded in `meta.json`).
-- **`build_distress_panel`** — PIT + survivorship-correct binary panel: latest 10-K public at
-  `d`, names alive at `d`, sector ranks over the full alive universe, `y=1` for a
-  distress-confirmed death in `(d, d+N]`, `y=0` for survivors and benign exits, ambiguous
-  rows dropped. Rebalance dates whose window runs past the ledger edge are **censored** so a
-  possible-future death is never mislabeled a negative.
-- **Validation** — `walk_forward_predict_proba` + `cpcv_auc` under the SAME purged
-  walk-forward / CPCV as the return head, but with a **12-period purge** (the distress label
-  overlaps 12 months, not 3). `distress_metrics`: pooled ROC-AUC / PR-AUC, per-date
-  precision·recall @ decile, and a pooled reliability table.
-- **Separate frozen artifact** — `fit_distress` + `save_distress_artifact`/
-  `DistressArtifact`/`load_distress_artifact`, mirroring the return head's `Artifact` (no
-  `fit` on the serve side; refuses missing feature columns; version-drift warning). Writes to
-  **`artifacts/distress_model/`** with its own `meta.json` (horizon, censor date, base rate,
-  confirmation thresholds, WF + CPCV metrics on the honesty trail).
-- **`attach_distress_label` + `scripts/run_distress_overlay.py`** — the overlay gate above:
-  labels the return head's tradable panel with the identical windowed rule, generates OOS
-  return + distress signals, and runs the veto sweep, the tradable-universe decile diagnostic,
-  and the borrow-aware short-sleeve probe against the honest backtester. Offline only.
-- **Firewalled display/alert wiring** — `distress_flag` + `load_distress_artifact_optional`;
-  `ServeData.distress_artifact` + `analyze(... distress=)`; the TUI ticker/watchlist surfaces;
-  the monitor `distress_risk` escalation alert + `signal_state.distress` migration. Every one
-  is display/monitoring only, verified firewalled from the traded signal by test.
-
-## Deferred / accepted
-
-- **Never touches a trade rule.** The overlay gate settled the trade question in the negative,
-  so P(distress) does NOT replace the rule-based hard-distress exit or the `-0.70` haircut and
-  is not in the paper book — it is a human-facing risk flag only. The firewall is structural
-  (attached after scoring, never in the packet) and test-enforced.
-- **Serve/TUI score the distress head on the LIQUIDITY-FILTERED cross-section's ranks**, while
-  the frozen artifact was trained on full-universe ranks — a mild rank-basis mismatch accepted
-  for a display flag (the overlay diagnostic showed the head still separates outcomes sharply
-  on tradable-universe ranks). A tradable-universe distress artifact is a later refinement.
-- **Bond-Form-25 early events** (the known ledger limitation, see `intrinio_universe.py`): the
-  ledger's one earliest event per cik is occasionally a *bond* delisting years before the
-  equity died (Sears' 2013 notes Form-25), so its terminal-price check lands on a still-healthy
-  price → the name is scored **benign and lost as a positive**. This deflates recall but injects
-  no false positives (conservative); the 4,685 unpriced-ambiguous drops are the larger recall
-  cost. Both are measured, not hidden.
-- **Universe = full PIT-alive names, not the liquidity-filtered tradable set.** Distress names
-  are systematically illiquid; applying the return head's dollar-volume floor would drop the
-  very positives we want to learn and bias the base rate. A liquidity-filtered serve variant is
-  a later choice.
-
-Tests: **233 passed / 1 skipped** (+19 for the distress head). `tests/test_distress.py` (14):
-windowed-PIT label correctness, no-look-ahead window boundary, survivorship presence,
-ambiguous-drop, censoring, price confirmation distress-vs-M&A, reason bypass,
-`attach_distress_label` window + censor, learns-signal / nothing-in-noise OOS, artifact parity
-+ no-retrain + column-drift, flag thresholds, optional loader. Plus the firewall/wiring tests:
-`test_serve.py` (display-only, signal byte-identical with/without the head), `test_ops_state.py`
-(distress persistence + old-DB migration), `test_ops_monitor.py` (escalation-alert-once +
-degraded-night suppression).
-
----
-
-# Reversal / Low-Vol / Illiquidity Test — All Three Fail; st_rev's Marginal Bar-Pass Dies at the Matched Horizon (2026-07-03)
-
-Direct follow-up to the momentum test (real standalone signal but **non-additive** — did
-not beat the fundamentals-only model under walk-forward + CPCV, so it was NOT promoted;
-see the `momentum-non-additive` memory / `feature/momentum-factor`). Same honest harness,
-three new Tier-0 **price** features attached to the SAME 450k-row panel (they never filter
-rows, so every arm scores the identical cross-section — only the feature set changes):
-short-term reversal (`st_rev`, raw trailing 21d return), low-vol (`low_vol`, −126d realized
-vol), Amihud illiquidity (`amihud`, trailing |ret|/dollar-volume).
-
-**Verdict: do NOT promote any of them.** `low_vol`, `amihud`, and `+all3` fail outright at the
-model level. `st_rev` nominally meets the letter of the bar at the shipped 63d horizon (beats
-baseline on WF IC/t AND CPCV mean at every seed, tail intact) and its 63d walk-forward lift is
-even block-bootstrap-significant — **but the follow-up matched-horizon test (Path 2, below) kills
-it**: at the reversal's native ~1-month horizon st_rev is dead (WF Δ +0.0007, bootstrap CI crosses
-zero, CPCV Δ ≈ 0). The 63d bump is horizon-fragile, interaction-driven, and one-of-five features
-tried — an artifact, not a reversal edge. Per protocol I STOPPED before touching serve/retraining.
-The shipped model, serve path, and paper-forward book are byte-identical (`price_features=False`).
-
-`uv run python scripts/run_reversal_test.py` (no-impute, 450,586 rows, 182 dates, ~2,475
-names/date). rank_ic is SIGNED, so standalone ICs are reported with their real sign.
-
-## The three candidates on the DATA bars
-
-| feature | coverage | orthogonality (mean \|corr\| to fundamentals) | standalone signed IC (t_nw) |
-|---|---|---|---|
-| `st_rev`  | 100% | **0.014** (orthogonal) | **+0.0060 (t +0.95)** — expected −; the 21d reversal is *washed out* at the 63d label |
-| `low_vol` | 85%  | 0.233 (overlaps quality) | +0.0665 (t +3.02) |
-| `amihud`  | 100% | 0.181 (overlaps size/quality) | −0.0615 (t −5.22) — sign flips vs textbook inside a liquidity-floored universe |
-
-The honest caveat held: short-term reversal is a ~1-month effect, and against the 63-day
-label its standalone IC is ~0 and **insignificant**. low_vol and amihud have strong (signed)
-standalone ICs but are *not* orthogonal — they lean on the same quality/size axis the
-fundamentals already price.
-
-## …and at the MODEL level (walk-forward + CPCV — the bar that counts)
-
-| feature set | WF IC | t_nw | decile | CPCV mean | CPCV 5th-pct | frac>0 |
-|---|---|---|---|---|---|---|
-| **baseline (10 fundamentals)** | **+0.0391** | **+5.92** | +0.0229 | **+0.0369** | +0.0134 | 100% |
-| + st_rev  | +0.0419 | +6.38 | +0.0246 | +0.0390 | +0.0147 | 100% |
-| + low_vol | +0.0414 | +5.31 | +0.0258 | **+0.0238** | **−0.0279** | **84%** |
-| + amihud  | +0.0418 | +6.31 | +0.0261 | +0.0372 | +0.0107 | 100% |
-| + all3    | +0.0421 | +5.68 | +0.0276 | **+0.0251** | **−0.0255** | **87%** |
-
-- **low_vol** and **+all3** COLLAPSE under CPCV — mean craters to ~+0.024, the 5th-pct goes
-  **negative**, frac>0 drops to ~85%. A walk-forward "win" that dies under CPCV: exactly the
-  failure mode the bar exists to catch. Do NOT promote.
-- **amihud** looks good on walk-forward but its CPCV mean barely moves (+0.0372 vs +0.0369,
-  Δ ≈ 0) and its 5th-pct is *worse* than baseline (+0.0107 vs +0.0134). Paired per-combo it is
-  a wash/negative (Δmean −0.0009, only 51% of combos improve, paired t −1.17). Fails the
-  CPCV-mean half of the bar. Do NOT promote.
-- **st_rev** beats baseline on WF IC/t AND CPCV mean — the only feature that does.
-
-## st_rev robustness — the one that clears the bar (thin, but seed-robust)
-
-Because meeting the bar means STOP-and-report, a +0.002 CPCV delta was not taken at face
-value. Two checks (LightGBM bagging is seeded, and CPCV combos are *paired*):
-
-| seed | WF Δ (st_rev − base) | CPCV mean Δ |
-|---|---|---|
-| default | +0.0028 | +0.0021 |
-| 0   | +0.0045 | +0.0015 |
-| 7   | +0.0048 | +0.0006 |
-| 42  | (paired, below) | +0.0011 |
-| 123 | +0.0029 | +0.0019 |
-
-- **Seed-robust and always positive:** WF Δ ∈ [+0.003, +0.005] and CPCV mean Δ ∈ [+0.0006,
-  +0.0021] — positive at **5/5 seeds**, never flat or negative. The baseline CPCV mean itself
-  wobbles ±~0.0004 across seeds, so most of the st_rev lift sits above the seed-noise floor.
-- **But not uniform and interaction-driven:** the paired per-combo CPCV delta (seed 42) is
-  +0.0011 with only **67% of the 45 combos improving** (a third get *worse*); the paired
-  t = +3.00 is inflated because CPCV combos share overlapping training data (effective N ≪ 45).
-  And st_rev's own standalone IC is insignificant — the model-level gain comes from
-  *interactions/conditioning*, not a direct signal, which is more fragile.
-- The WF lift (~+0.004) is consistently **larger** than the CPCV lift (~+0.0014), hinting the
-  reversal edge is period-dependent (WF's later expanding folds weight recent regimes more).
-
-## Path 2 — matched-horizon + block-bootstrap (in-sample, since paper-forward can't resolve a ~0.001 effect for years)
-
-The paper-forward OOS window can't confirm a +0.0014 CPCV effect against ~0.10 monthly-IC
-noise for years, so the verdict was tightened in-sample instead (`scripts/run_reversal_matched_horizon.py`):
-(1) rebuild the panel with a **21-day** label — the reversal's native horizon — and re-run
-everything; (2) a construction scan of trailing windows {5,10,21,42,63}; (3) a
-**moving-block bootstrap** of the seed-averaged per-date ΔIC (the honest significance test the
-paired CPCV t=3.00 wasn't — CPCV combos share training data, so that t is inflated).
-
-**Construction scan — signed cross-sectional IC of the raw trailing-window return** (reversal ⇒
-NEGATIVE; t_nw in parens):
-
-| label | w5 | w10 | w21 | w42 | w63 |
+| feature set | WF IC | t_nw | decile spread | CPCV mean | CPCV 5th-pct |
 |---|---|---|---|---|---|
-| 21d | −0.0042 (−0.6) | −0.0018 (−0.2) | +0.0013 (+0.2) | +0.0018 (+0.2) | +0.0075 (+0.8) |
-| 63d | +0.0068 (+1.3) | +0.0083 (+1.4) | +0.0105 (+1.5) | +0.0158 (+1.6) | +0.0196 (+1.8) |
+| **baseline (10 fundamentals)** | **+0.0391** | **+5.92** | +0.0229 | **+0.0369** | +0.0134 |
+| + mom12 | +0.0382 | +5.37 | +0.0243 | +0.0355 | +0.0161 |
+| + mom12 + mom6 | +0.0372 | +4.83 | +0.0240 | +0.0371 | +0.0172 |
 
-Reversal (negative IC) shows up ONLY at w5/w10 vs the 21d label and is **insignificant**;
-everything else is positive (weak *continuation*). **There is no meaningful short-term reversal
-in this liquid, survivorship-free universe** — the raw trailing return behaves like weak
-momentum, strongest at longer windows.
+Adding momentum moves the headline metrics by ±0.001–0.002 (**within CPCV noise**) and
+the primary walk-forward IC/t *regresses*. A new data dependency + serve-parity surface
+for zero demonstrable gain fails parsimony. Likely cause: the fundamentals model is
+already strong (IC ~0.039) and momentum's edge is regime-dependent (momentum crashes),
+so pooled across 182 months it adds ~as much variance as signal in the OOS folds.
 
-**Model-level, matched vs shipped horizon** (seed-avg WF; block-bootstrap of per-date ΔIC):
+## What was kept (default-off, so the frozen model/serve/paper-forward are untouched)
 
-| label | WF baseline IC (t) | WF +st_rev IC (t) | WF ΔIC | bootstrap ΔIC 95% CI | P(ΔIC>0) | CPCV Δmean (frac>0) |
-|---|---|---|---|---|---|---|
-| **21d** (native) | +0.0250 (4.87) | +0.0257 (4.72) | +0.0007 | **[−0.0042, +0.0057]** | 62% | −0.0001 (47%) |
-| **63d** (shipped) | +0.0391 (5.89) | +0.0432 (6.30) | +0.0041 | [+0.0021, +0.0062] | 100% | +0.0011 (67%) |
+- `panel.momentum_6_1()` beside the existing `momentum_12_1()`.
+- Price features threaded through the parity seam in `fundamental_panel.py`
+  (`PRICE_FEATURES`, `price_feature_matrices`, `attach_price_features`,
+  `add_sector_ranks(..., features=...)`), gated behind `build_fundamental_panel(price_features=False)`.
+- `scripts/run_momentum_test.py` (WF + CPCV head-to-head harness) and
+  `tests/test_momentum_features.py` (PIT / parity / NaN-safety). 203 tests green.
 
-At the **21-day horizon where reversal should be strongest, st_rev is dead**: WF Δ +0.0007 with
-a bootstrap CI straddling zero, and CPCV Δ −0.0001 — the t-stat even *drops*. The 63d benefit
-does NOT replicate at the matched horizon; it is **horizon-fragile**. So whatever st_rev adds at
-63d is weak short-horizon continuation working through interactions, not a reversal signal.
-
-## Verdict & recommendation — do NOT promote
-
-`st_rev` nominally passes the mechanical bar at 63d (WF ↑, CPCV mean ↑), and its 63d walk-forward
-ΔIC (+0.0041) is even block-bootstrap-significant. **But Path 2 is decisive against promotion:**
-
-1. **The reversal thesis is falsified.** At the native 21-day horizon st_rev is dead (bootstrap CI
-   crosses zero, CPCV Δ ≈ 0). A real ~1-month effect would be *strongest* at ~1-month labels; this
-   is *absent* there and only appears at 63d — the fingerprint of a horizon-specific artifact, not
-   a stable economic signal.
-2. **The one positive is the weakest kind of evidence the project trusts.** The 63d WF significance
-   comes from a single train/test scheme; CPCV (the stricter lens the bar was built around) says
-   +0.0011 marginal, 67% of combos. And st_rev is **one of five price features tried** (mom_12_1,
-   mom_6_1, st_rev, low_vol, amihud) — finding one WF-significant improvement across five candidates
-   is textbook multiple-comparisons.
-3. **Cost stays real:** a live price-data dependency on a price-feature-free frozen model, a
-   retrain + refreeze, and a wider serve-parity surface — for a benefit that is not reversal, is
-   CPCV-marginal, and evaporates at the matched horizon.
-
-**Recommendation: do NOT promote `st_rev` (nor low_vol/amihud/all3).** Per instructions I stopped
-before wiring serve or retraining. This closes the reversal/low-vol/illiquidity Tier-0 line the
-same way momentum closed: real-looking in one slice, not a stable model-level edge. The
-price-feature harness stays for the next idea (residual reversal on sector-neutral returns, beta,
-turnover), but raw short-term reversal should not be re-litigated in this universe.
-
-## What was kept (default-off — shipped model / serve / paper-forward untouched)
-
-- `panel.short_term_reversal()`, `panel.low_vol()`, `panel.amihud()` beside the momentum fns.
-- `PRICE_FEATURES` widened to the 5-feature research registry; `price_feature_matrices(close,
-  dv=None)` builds `amihud` only when dollar volume is supplied; `build_fundamental_panel`
-  derives `rank_features` from the matrices actually built (a skipped amihud is never ranked).
-- `scripts/run_reversal_test.py` (WF + CPCV head-to-head) and `tests/test_reversal_features.py`
-  (PIT / parity / NaN-safety incl. zero-volume masking + dv-optional amihud). 214 tests green.
-
-All of it is gated behind `price_features=False`: the frozen artifact, the serve path, and
-the paper-forward book are byte-identical.
+This infra makes the **next** price feature (short-term reversal, low-vol/beta, Amihud
+illiquidity) nearly free to test on the same honest bar. None of it changes the shipped
+model: `price_features` defaults to False everywhere.
 
 ---
 

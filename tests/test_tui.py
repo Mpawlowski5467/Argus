@@ -5,7 +5,10 @@ import asyncio
 import pandas as pd
 import pytest
 
-from stockscan.tui.data import scan_rows, search_rows, sectors_in, status_dict, watch_rows
+from stockscan.tui.data import (
+    market_rows, scan_rows, search_rows, sectors_in, status_dict,
+    theme_market_rows, watch_rows,
+)
 
 
 # --- pure facade helpers (no textual, no real data) -----------------------------
@@ -54,6 +57,57 @@ def test_watch_rows_delta_and_missing_flag():
     assert rows[0]["delta"] == 10 and rows[0]["pct"] == 90     # 90 - 80
     assert rows[0]["last_filing"] == "2025-03-01"
     assert rows[1]["pct"] is None and rows[1]["flag"] is not None  # not in liquid cross
+
+
+def test_market_rows_groups_by_industry_ranks_and_drops_unknown():
+    cross = pd.DataFrame({
+        "cik":    [1, 2, 3, 4, 5],
+        "ticker": ["A", "B", "C", "D", "U"],
+        "name":   ["Alpha", "Beta", "Gamma", "Delta", "Unk"],
+        "sic":    [3674, 3674, 3674, 2834, None],   # semis x3, pharma x1, unmapped
+        "score":  [0.1, 0.9, 0.5, 0.2, 0.7],
+        "pct":    [0.20, 0.99, 0.60, 0.40, 0.80],
+    })
+    rows = market_rows(cross, top_k=2, min_names=1)
+    assert [r["market"] for r in rows] == ["Semiconductors", "Pharmaceuticals"]  # count desc
+    semis = rows[0]
+    assert semis["count"] == 3
+    assert [p["ticker"] for p in semis["picks"]] == ["B", "C"]  # top-2 by score
+    assert semis["picks"][0]["pct"] == 99 and semis["picks"][0]["decile"] == 10
+
+
+def test_render_market_detail_composes_info_and_financials():
+    from stockscan.tui.data import render_market_detail
+    fund = {"name": "NVIDIA", "ticker": "NVDA", "fy": 2025, "filed": "2025-02-01",
+            "pct": 97, "decile": 10,
+            "metrics": [{"label": "Return on assets", "value": "+30.0%", "rank": 99}]}
+    prof = {"industry": "Semiconductors", "city": "Santa Clara", "state": "California",
+            "description": "designs GPUs"}
+    out = render_market_detail(fund, prof, 3.0e12)
+    assert "NVIDIA" in out and "NVDA" in out                # who
+    assert "Semiconductors" in out and "Santa Clara" in out  # info
+    assert "designs GPUs" in out                             # what it does
+    assert "$3.0T" in out and "97th" in out                  # cap + model standing
+    assert "Return on assets" in out and "99th" in out       # recent financials
+    assert "hover" in render_market_detail(None, None, None)  # empty -> hint
+
+
+def test_theme_market_rows_groups_by_tag_and_filters_thin():
+    cross = pd.DataFrame({
+        "cik":    [1, 2, 3, 4],
+        "ticker": ["A", "B", "C", "D"],
+        "name":   ["Alpha", "Beta", "Gamma", "Delta"],
+        "score":  [0.9, 0.1, 0.5, 0.2],
+        "pct":    [0.99, 0.10, 0.60, 0.40],
+    })
+    tags = {1: ["AI", "Cloud"], 2: ["AI"], 3: ["AI"], 99: ["AI"]}
+    rows = theme_market_rows(cross, tags, top_k=2, min_names=2)
+    markets = {r["market"]: r for r in rows}
+    assert set(markets) == {"AI"}                       # Cloud (1 present name) below floor
+    ai = markets["AI"]
+    assert ai["count"] == 3                             # ciks 1,2,3 present; 99 not in cross
+    assert [p["ticker"] for p in ai["picks"]] == ["A", "C"]   # top-2 by score
+    assert theme_market_rows(cross, {}) == []           # no tags -> no themes
 
 
 def test_status_dict_shape(tmp_path):
@@ -146,6 +200,35 @@ class FakeData:
         return {"last": 309.12, "time": "2026-07-02T23:57:00Z", "bid": 309.0, "ask": 309.2,
                 "prev_close": 308.63, "chg_pct": 0.16}
 
+    def markets(self, top_k=6):
+        return [{"market": "Semiconductors", "count": 2, "picks": [
+            {"cik": 320193, "ticker": "AAPL", "name": "Apple", "pct": 96, "decile": 10},
+            {"cik": 2, "ticker": "MSFT", "name": "Microsoft", "pct": 88, "decile": 9}]}]
+
+    def theme_markets(self, top_k=6):
+        return [{"market": "AI", "count": 1, "picks": [
+            {"cik": 2, "ticker": "MSFT", "name": "Microsoft", "pct": 88, "decile": 9}]}]
+
+    def market_constituents(self, kind, name, cand=60):
+        return [{"cik": 320193, "ticker": "AAPL", "name": "Apple", "pct": 96, "decile": 10},
+                {"cik": 2, "ticker": "MSFT", "name": "Microsoft", "pct": 88, "decile": 9}]
+
+    def fundamentals(self, cik):
+        return {"name": "Apple", "ticker": "AAPL", "fy": 2025, "filed": "2025-11-02",
+                "pct": 96, "decile": 10,
+                "metrics": [{"label": "Return on assets", "value": "+12.4%", "rank": 88}]}
+
+    def market_cap(self, cik):
+        return 3.1e12 if int(cik) == 320193 else 2.4e12
+
+    def profile(self, cik):
+        return {"cik": cik, "name": "Apple Inc.", "legal_name": "Apple Inc.",
+                "description": "Apple Inc. designs, manufactures, and markets smartphones.",
+                "sector": "Manufacturing", "industry": "Computer Hardware",
+                "city": "Cupertino", "state": "California",
+                "country": "United States of America", "employees": 164000,
+                "ceo": "Timothy D. Cook", "url": "apple.com"}
+
     def is_watched(self, cik):
         return int(cik) in self.__dict__.setdefault("_w", set())
 
@@ -166,9 +249,9 @@ class FakeData:
 
 def test_argus_boots_switches_and_themes():
     pytest.importorskip("textual")
-    from textual.widgets import ContentSwitcher, DataTable
+    from textual.widgets import ContentSwitcher, DataTable, Select
 
-    from stockscan.tui.app import ArgusApp, TickerView
+    from stockscan.tui.app import ArgusApp, MarketsView, TickerView
 
     async def scenario():
         app = ArgusApp(adata=FakeData())
@@ -182,10 +265,27 @@ def test_argus_boots_switches_and_themes():
             await pilot.press("t")
             assert app.theme != before          # light/dark toggle works
 
-            for key, view in (("3", "watch"), ("4", "paper"), ("2", "ticker"), ("1", "scan")):
+            for key, view in (("3", "watch"), ("4", "paper"), ("5", "markets"),
+                              ("2", "ticker"), ("1", "scan")):
                 await pilot.press(key)
                 await pilot.pause()
                 assert sw.current == view
+
+            # markets page renders theme + industry blocks + picks (caps fill via a worker)
+            mv = app.query_one(MarketsView)
+            mpage = mv._build()
+            assert "SEMICONDUCTORS" in mpage and "AAPL" in mpage   # an industry market
+            assert "THEMES" in mpage and "AI" in mpage             # thematic section
+            # a market picker drives the treemap drill-in
+            assert app.query_one("#market-pick", Select) is not None
+            mv._mode, mv._map_name = "map", "Semiconductors"
+            mv.set_map("Semiconductors", [
+                {"cik": 320193, "ticker": "NVDA", "cap": 3e12, "decile": 10},
+                {"cik": 2, "ticker": "AMD", "cap": 2.5e11, "decile": 6}])
+            assert "NVDA" in mv._map_markup and "on #" in mv._map_markup   # treemap rendered
+            # hovering a tile builds the company detail card from in-memory data
+            mv.on_tile_hover(0)
+            assert "Apple" in mv._detail_markup and "recent financials" in mv._detail_markup
 
             app.show_ticker(320193)
             assert sw.current == "ticker"
@@ -198,11 +298,14 @@ def test_argus_boots_switches_and_themes():
             assert "candle chart" in page          # candles are the default view
             # the enrichment worker is async; drive the callback deterministically
             tv.set_enrichment(320193, app.adata.events(320193),
-                              app.adata.news(320193), app.adata.live_quote(320193))
+                              app.adata.news(320193), app.adata.live_quote(320193),
+                              app.adata.profile(320193))
             page2 = tv._build(tv._res)
             assert "10-Q" in page2                 # EDGAR filing/event
             assert "reuters.com" in page2          # Intrinio news headline
             assert "live" in page2                 # live quote line
+            assert "designs, manufactures" in page2   # company profile description
+            assert "HQ Cupertino, California, USA" in page2  # HQ location (country shortened)
             tv.toggle_chart()                      # candle <-> line
             assert "line chart" in tv._build(tv._res)
 

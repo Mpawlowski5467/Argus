@@ -1,6 +1,6 @@
-"""Tests for the SIC -> sector division mapping."""
+"""Tests for the SIC -> sector division (model) + fine industry (display) mappings."""
 
-from stockscan.sector import sic_division
+from stockscan.sector import sic_division, sic_industry
 
 
 def test_sic_division_buckets():
@@ -14,3 +14,34 @@ def test_sic_division_buckets():
 def test_sic_division_handles_missing():
     assert sic_division(None) == "Unknown"
     assert sic_division(float("nan")) == "Unknown"
+
+
+def test_sic_industry_maps_named_industries():
+    cases = {
+        3674: "Semiconductors",
+        1311: "Oil & Gas E&P",
+        2911: "Oil Refining",
+        1381: "Oil & Gas Services",
+        4923: "Pipelines & Gas Utilities",
+        4911: "Electric & Multi Utilities",
+        7372: "Software",
+        7373: "IT Services & Internet",
+        2834: "Pharmaceuticals",
+        2836: "Biotech",
+        6022: "Banks",
+        6798: "REITs",
+        6311: "Insurance",
+        5812: "Restaurants",
+        3711: "Autos & Parts",
+    }
+    for sic, label in cases.items():
+        assert sic_industry(sic) == label, f"SIC {sic} -> {sic_industry(sic)!r}, want {label!r}"
+
+
+def test_sic_industry_precedence_and_fallback():
+    # specific codes must win over the broad range they sit inside
+    assert sic_industry(2834) == "Pharmaceuticals"   # not the 2800-2899 Chemicals range
+    assert sic_industry(2082) == "Beverages"         # not the 2000-2099 Food range
+    # an unmapped-but-valid code falls back to the coarse division, never empty
+    assert sic_industry(9995) == sic_division(9995)
+    assert sic_industry(None) == "Unknown"

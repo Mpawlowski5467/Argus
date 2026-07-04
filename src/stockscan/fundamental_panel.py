@@ -19,25 +19,14 @@ import pandas as pd
 from .config import DELISTING_RETURN, LABEL_HORIZON_DAYS, MAX_STALE_DAYS, MIN_SECTOR_BUCKET
 from .edgar.tickers import cik_to_ticker
 from .features import FEATURES
-from .panel import (
-    amihud,
-    forward_return_to_last,
-    low_vol,
-    momentum_6_1,
-    momentum_12_1,
-    month_end_dates,
-    short_term_reversal,
-)
+from .panel import forward_return_to_last, momentum_6_1, momentum_12_1, month_end_dates
 from .pit import assert_pit, available_date
 from .sector import sic_division
 
 # Price-derived features: computed as-of the rebalance date from the shared close
-# (and dollar-volume) matrices, NOT carried on the filing row like FEATURES. Point-in-time
-# and survivorship-free by construction (only past prices; dead names keep their column).
-# This is the shared registry the head-to-head research scripts draw arms from; the
-# shipped model uses NONE of them (build_fundamental_panel(price_features=False) default).
-# ``amihud`` needs the dollar-volume matrix, so it is only built when ``dv`` is supplied.
-PRICE_FEATURES = ["mom_12_1", "mom_6_1", "st_rev", "low_vol", "amihud"]
+# matrix, NOT carried on the filing row like FEATURES. Point-in-time and
+# survivorship-free by construction (only past closes; dead names keep their column).
+PRICE_FEATURES = ["mom_12_1", "mom_6_1"]
 
 # Imputed terminal return by ledger reason, sourced from the locked config decision
 # (DESIGN.md §10): Form 15 deregistration ("dereg") = going-dark -> -1.00; Form 25/25-NSE
@@ -115,24 +104,9 @@ def add_sector_ranks(
     return out
 
 
-def price_feature_matrices(
-    close: pd.DataFrame, dv: pd.DataFrame | None = None
-) -> dict[str, pd.DataFrame]:
-    """Wide [date x ticker] matrix per price feature, computed once for the whole run.
-
-    ``dv`` (dollar volume) is optional: without it the volume-based ``amihud`` matrix
-    is skipped (the price-only features still build). Callers derive the rank list from
-    the returned keys, so a skipped feature is simply never attached or ranked.
-    """
-    mats = {
-        "mom_12_1": momentum_12_1(close),
-        "mom_6_1": momentum_6_1(close),
-        "st_rev": short_term_reversal(close),
-        "low_vol": low_vol(close),
-    }
-    if dv is not None:
-        mats["amihud"] = amihud(close, dv)
-    return mats
+def price_feature_matrices(close: pd.DataFrame) -> dict[str, pd.DataFrame]:
+    """Wide [date x ticker] matrix per price feature, computed once for the whole run."""
+    return {"mom_12_1": momentum_12_1(close), "mom_6_1": momentum_6_1(close)}
 
 
 def attach_price_features(
@@ -171,10 +145,8 @@ def build_fundamental_panel(
     reason_return = reason_return or REASON_RETURN
     c2t = ticker_map if ticker_map is not None else cik_to_ticker()
     # Price features attach as-of each rebalance date; matrices built once up front.
-    # rank_features follows the matrices ACTUALLY built (amihud is skipped without dv),
-    # so add_sector_ranks never ranks a column that was never attached.
-    mom_mats = price_feature_matrices(close, dollar_volume) if price_features else None
-    rank_features = FEATURES + list(mom_mats) if mom_mats else FEATURES
+    rank_features = FEATURES + PRICE_FEATURES if price_features else FEATURES
+    mom_mats = price_feature_matrices(close) if price_features else None
     dmap = {}
     if delistings is not None and len(delistings):
         for cik, dd, reason in zip(delistings["cik"], delistings["delist_date"], delistings["reason"]):

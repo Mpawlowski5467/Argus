@@ -124,6 +124,29 @@ NEWS_CREDIBILITY_FLOOR = 0.45         # curation: drop below this source credibi
                                       # must be decisively material to surface; unknown
                                       # hosts default to 0.5 and pass)
 
+# --- company profile (LIVE-VIEW ONLY — never scoring/backtest/panel) -------------
+# Qualitative company metadata from Intrinio /companies: what the company does
+# (business description), where it is headquartered, sector/industry. FIREWALLED
+# exactly like news memory — display-only, never a feature, never scored, never
+# point-in-time-joined into the panel. Fetched lazily BY CIK (the unambiguous,
+# recycle-proof identifier) and cached so it doesn't burn quota per screen.
+PROFILE_DB_PATH = ARTIFACTS_DIR / "profiles.sqlite"
+PROFILE_REFETCH_DAYS = 30             # profiles change rarely; skip the network re-fetch
+                                      # for a name cached more recently than this
+
+# Live market cap (Intrinio) for the markets overview — same live-view firewall as
+# profiles: display-only sizing, never a feature, never scored. Moves daily, so the
+# cache TTL is hours, not days.
+MARKETCAP_DB_PATH = ARTIFACTS_DIR / "marketcap.sqlite"
+MARKETCAP_REFETCH_HOURS = 20          # skip the network re-fetch within a trading day
+
+# Thematic markets (AI / SaaS / EV …) — auto-tagged by keyword-matching the Intrinio
+# business descriptions (same firewalled live-view layer as profiles; display-only,
+# never a feature). Themes aren't a standard classification, so membership is derived
+# text-matching, precomputed by `ops.py themes` into this store.
+THEMES_DB_PATH = ARTIFACTS_DIR / "themes.sqlite"
+THEME_MIN_NAMES = 3                   # don't surface a theme with fewer tagged names
+
 # --- continuous operation (Phase 5, DESIGN.md §8) -------------------------------
 OPS_STATE_PATH = ARTIFACTS_DIR / "ops_state.sqlite"   # mutable ops state (SQLite)
 PAPER_DIR = ARTIFACTS_DIR / "paper_forward"           # append-only paper-forward store

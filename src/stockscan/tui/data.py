@@ -107,6 +107,109 @@ def watch_rows(watchlist: list[dict], cross: pd.DataFrame,
     return rows
 
 
+def _pick_row(r) -> dict:
+    """One markets-page pick row from a scored cross-section row."""
+    return {
+        "cik": int(r["cik"]),
+        "ticker": str(r.get("ticker") or "—"),
+        "name": str(r.get("name") or "")[:34],
+        "pct": int(round(float(r["pct"]) * 100)),
+        "decile": _decile(float(r["pct"])),
+    }
+
+
+def market_rows(cross: pd.DataFrame, top_k: int = 6, min_names: int = 10) -> list[dict]:
+    """Per-industry ML top picks for the markets overview (sized later by market cap).
+
+    Groups by the fine ``sic_industry`` label (Semiconductors, Oil & Gas E&P,
+    Software, Banks, …) — NOT the coarse model sector — ordered by how many names
+    each holds. Industries thinner than ``min_names`` and the catch-all 'Unknown'
+    are dropped. Each market's ``picks`` are its highest-scoring names, best first;
+    the page annotates each with a live market cap fetched separately.
+    """
+    from ..sector import sic_industry
+
+    df = cross.copy()
+    df["_industry"] = df["sic"].map(sic_industry)
+    counts = df["_industry"].value_counts()
+    out = []
+    for industry in counts.index:
+        if not industry or str(industry) == "Unknown" or counts[industry] < min_names:
+            continue
+        sub = (df[df["_industry"] == industry]
+               .sort_values("score", ascending=False).head(top_k))
+        picks = [_pick_row(r) for _, r in sub.iterrows()]
+        if picks:
+            out.append({"market": str(industry), "count": int(counts[industry]),
+                        "picks": picks})
+    return out
+
+
+def theme_market_rows(cross: pd.DataFrame, tags: dict, top_k: int = 6,
+                      min_names: int = 3) -> list[dict]:
+    """Thematic 'markets' (AI/SaaS/EV…) from precomputed {cik: [themes]} tags.
+
+    Same shape as ``market_rows`` but membership comes from the auto-tagged theme
+    store rather than SIC. Only names present in the current cross-section count;
+    themes with fewer than ``min_names`` are dropped; ordered by tagged count.
+    """
+    if not tags:
+        return []
+    present = set(cross["cik"].astype(int))
+    by_theme: dict[str, set] = {}
+    for cik, themes in tags.items():
+        if int(cik) not in present:
+            continue
+        for t in themes:
+            by_theme.setdefault(t, set()).add(int(cik))
+
+    ciks_col = cross["cik"].astype(int)
+    out = []
+    for theme, ciks in by_theme.items():
+        if len(ciks) < min_names:
+            continue
+        sub = (cross[ciks_col.isin(ciks)]
+               .sort_values("score", ascending=False).head(top_k))
+        picks = [_pick_row(r) for _, r in sub.iterrows()]
+        if picks:
+            out.append({"market": str(theme), "count": len(ciks), "picks": picks})
+    out.sort(key=lambda m: m["count"], reverse=True)
+    return out
+
+
+def render_market_detail(fund: dict | None, profile: dict | None, cap) -> str:
+    """Rich-markup detail card for a treemap tile: who + what + recent financials.
+
+    Everything comes from already-loaded data (the cross-section row + a cached
+    profile + the tile's live cap), so it renders instantly on hover."""
+    from .treemap import fmt_cap
+
+    if not fund:
+        return "[dim]hover a tile for company detail · click to open the full page[/dim]"
+    prof = profile or {}
+    loc = ", ".join(x for x in (prof.get("city"), prof.get("state")) if x)
+    head = f"[b]{fund['name']}[/b]  [cyan]{fund['ticker']}[/cyan]"
+    tags = [x for x in (prof.get("industry"), f"HQ {loc}" if loc else None) if x]
+    if tags:
+        head += "   [dim]" + " · ".join(tags) + "[/dim]"
+    lines = [head]
+    if prof.get("description"):
+        lines.append(f"[dim]{prof['description']}[/dim]")
+    fy = f"FY{fund['fy']}" if fund.get("fy") else ""
+    filed = f"· filed {fund['filed']}" if fund.get("filed") else ""
+    lines.append(
+        f"[dim]mkt cap[/dim] [b]{fmt_cap(cap) if cap else 'n/a'}[/b]   "
+        f"[dim]model[/dim] {fund['pct']}th [dim](decile {fund['decile']}/10)[/dim]   "
+        f"[dim]{fy} {filed}[/dim]")
+    if fund.get("metrics"):
+        segs = []
+        for m in fund["metrics"]:
+            rk = f" [dim]({m['rank']}th)[/dim]" if m.get("rank") is not None else ""
+            segs.append(f"{m['label']} [b]{m['value']}[/b]{rk}")
+        lines.append("[dim]recent financials ·[/dim]  " + "   ".join(segs))
+    return "\n".join(lines)
+
+
 # --- the loaded facade ----------------------------------------------------------
 
 @dataclass
@@ -264,6 +367,131 @@ class ArgusData:
 
         sid = self._pick(cik, "security_id")
         res = realtime_price(sid) if sid else None
+        cache[cik] = res
+        return res
+
+    def profile(self, cik: int) -> dict | None:
+        """Company profile — what it does + HQ (Intrinio, LIVE-VIEW ONLY, never the signal).
+
+        Looked up by CIK (recycle-proof) and served from the persistent profiles.sqlite
+        cache; the network fetch only fires on a cache miss or a >30-day-stale row.
+        Session-cached on top of that so re-opening a name is instant."""
+        cache = self.__dict__.setdefault("_profile_cache", {})
+        if cik in cache:
+            return cache[cik]
+        from ..profile import get_profile
+
+        res = get_profile(int(cik))
+        cache[cik] = res
+        return res
+
+    def markets(self, top_k: int = 6) -> list[dict]:
+        """Per-industry ML top picks for the markets overview (caps fetched separately)."""
+        return market_rows(self._cross, top_k)
+
+    def theme_markets(self, top_k: int = 6) -> list[dict]:
+        """Thematic markets (AI/SaaS/EV…) from the precomputed tag store — [] if unbuilt.
+
+        Tags are auto-generated by `ops.py themes` (keyword-matching Intrinio company
+        descriptions, LIVE-VIEW ONLY). Loaded once per session."""
+        tags = self.__dict__.get("_theme_tags")
+        if tags is None:
+            from ..themes import load_theme_tags
+            try:
+                tags = load_theme_tags()
+            except Exception:
+                tags = {}
+            self.__dict__["_theme_tags"] = tags
+        return theme_market_rows(self._cross, tags, top_k)
+
+    def _theme_tag_map(self) -> dict:
+        tags = self.__dict__.get("_theme_tags")
+        if tags is None:
+            from ..themes import load_theme_tags
+            try:
+                tags = load_theme_tags()
+            except Exception:
+                tags = {}
+            self.__dict__["_theme_tags"] = tags
+        return tags
+
+    def market_constituents(self, kind: str, name: str, cand: int = 60) -> list[dict]:
+        """Names in one market (``kind`` = 'ind' | 'theme'), for the treemap.
+
+        Capped to the top ``cand`` by recent dollar volume — a cheap in-memory size
+        proxy so the caller live-fetches market cap for only the biggest-liquidity
+        candidates (the true megacaps are always among them), not the whole market.
+        """
+        df = self._cross
+        if kind == "theme":
+            ciks = {int(c) for c, ts in self._theme_tag_map().items() if name in ts}
+            sub = df[df["cik"].astype(int).isin(ciks)]
+        else:
+            from ..sector import sic_industry
+            sub = df[df["sic"].map(sic_industry) == name]
+        if sub.empty:
+            return []
+        dv = {}
+        for cik in sub["cik"].astype(int):
+            col = self.data.ticker_map.get(int(cik))
+            s = (self.data.dv_med[col].dropna()
+                 if col and col in self.data.dv_med.columns else None)
+            dv[int(cik)] = float(s.iloc[-1]) if s is not None and len(s) else 0.0
+        sub = (sub.assign(_dv=sub["cik"].astype(int).map(dv))
+               .sort_values("_dv", ascending=False).head(cand))
+        return [{
+            "cik": int(r["cik"]),
+            "ticker": str(r.get("ticker") or "—"),
+            "name": str(r.get("name") or ""),
+            "pct": int(round(float(r["pct"]) * 100)),
+            "decile": _decile(float(r["pct"])),
+        } for _, r in sub.iterrows()]
+
+    def fundamentals(self, cik: int) -> dict | None:
+        """Recent financials for one name, straight from the in-memory cross row.
+
+        Key ratios (revenue growth, margins, returns, leverage) formatted like the
+        ticker view's signals, each with its within-sector percentile rank. No I/O —
+        this is what makes the treemap hover instant."""
+        from ..narrate.packet import LABELS, _PCT
+
+        sub = self._cross[self._cross["cik"].astype(int) == int(cik)]
+        if sub.empty:
+            return None
+        r = sub.iloc[0]
+        metrics = []
+        for f in ("revenue_growth", "op_margin", "roa", "roe", "leverage"):
+            v = r.get(f)
+            if pd.isna(v):
+                continue
+            rank = r.get(f"{f}_rank")
+            metrics.append({
+                "label": LABELS[f].split(" (")[0],
+                "value": f"{v * 100:+.1f}%" if f in _PCT else f"{v:.2f}x",
+                "rank": int(round(float(rank) * 100)) if pd.notna(rank) else None,
+            })
+        return {
+            "name": str(r.get("name") or ""),
+            "ticker": str(r.get("ticker") or "—"),
+            "fy": int(r["fy"]) if pd.notna(r.get("fy")) else None,
+            "filed": (str(pd.Timestamp(r["available_date"]).date())
+                      if pd.notna(r.get("available_date")) else None),
+            "pct": int(round(float(r["pct"]) * 100)),
+            "decile": _decile(float(r["pct"])),
+            "metrics": metrics,
+        }
+
+    def market_cap(self, cik: int) -> float | None:
+        """Current market cap (Intrinio, LIVE-VIEW ONLY — sizing, never the signal).
+
+        Persistent-cached (hours TTL) then session-cached, so the markets page fetches
+        each name's cap at most once a day and reopening is instant."""
+        cache = self.__dict__.setdefault("_mktcap_cache", {})
+        if cik in cache:
+            return cache[cik]
+        from ..marketcap import get_market_cap
+
+        res = get_market_cap(int(cik))
         cache[cik] = res
         return res
 
