@@ -253,3 +253,34 @@ def test_confidence_is_display_only_and_firewalled(world):
     for k in ("score", "percentile", "decile", "ranks"):
         assert with_c[k] == without[k], k
     assert with_c["packet"] == without["packet"]             # nothing leaked into the packet
+
+
+# --- FIREWALLED large-drawdown risk-flag: display-only, never touches the signal ----
+
+def test_drawdown_head_is_display_only_and_firewalled(world, tmp_path):
+    """With a drawdown artifact attached, analyze() adds a `drawdown` block but the
+    return score/percentile/decile/drivers/packet are byte-identical to a run without it."""
+    from stockscan.drawdown import fit_drawdown, load_drawdown_artifact, save_drawdown_artifact
+
+    wp = world["panel"].copy()
+    wp["y"] = (wp["cik"] % 2 == 0).astype(float)   # arbitrary two-class label
+    wp.attrs["censor_date"] = wp["date"].max()
+    wp.attrs["horizon_months"] = 6
+    wp.attrs["threshold"] = -0.30
+    wmodel = fit_drawdown(wp, params=dict(n_estimators=15, min_child_samples=5))
+    wart = load_drawdown_artifact(save_drawdown_artifact(wmodel, wp, out_dir=tmp_path / "w"))
+
+    d = pd.Timestamp("2024-06-28")
+    with_w = analyze(7, as_of=d, data=world["data"], artifact=world["artifact"], drawdown_artifact=wart)
+    without = analyze(7, as_of=d, data=world["data"], artifact=world["artifact"])
+
+    assert without["drawdown"] is None                       # optional: absent when no head
+    wz = with_w["drawdown"]
+    assert set(wz) >= {"prob", "percentile", "flag", "horizon_months", "threshold"}
+    assert 0.0 <= wz["prob"] <= 1.0 and wz["flag"] in ("normal", "elevated", "high")
+    assert 0 <= wz["percentile"] <= 100 and wz["horizon_months"] == 6 and wz["threshold"] == -0.30
+
+    # THE FIREWALL: the traded signal cannot move because a risk-flag was attached
+    for k in ("score", "percentile", "decile", "ranks"):
+        assert with_w[k] == without[k], k
+    assert with_w["packet"] == without["packet"]             # nothing leaked into the packet

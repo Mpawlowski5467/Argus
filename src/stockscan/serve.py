@@ -35,6 +35,11 @@ from .distress import (
     distress_flag,
     load_distress_artifact_optional,
 )
+from .drawdown import (
+    DrawdownArtifact,
+    drawdown_flag,
+    load_drawdown_artifact_optional,
+)
 from .edgar.tickers import cik_for
 from .features import compute_features
 from .fundamental_panel import add_sector_ranks, liquidity_mask, pit_snapshot, prepare_features
@@ -60,6 +65,8 @@ class ServeData:
     # OPTIONAL, FIREWALLED confidence calibration (per-decile OOS hit-rate). Display-only;
     # None when unbuilt (serve then behaves exactly as before).
     confidence_calibration: dict | None = None
+    # OPTIONAL, FIREWALLED large-drawdown risk head — display/alert ONLY; None when unfrozen.
+    drawdown_artifact: DrawdownArtifact | None = None
 
 
 def load_serve_data() -> ServeData:
@@ -80,6 +87,7 @@ def load_serve_data() -> ServeData:
         ticker_map=tmap,
         distress_artifact=load_distress_artifact_optional(),
         confidence_calibration=load_calibration_optional(),
+        drawdown_artifact=load_drawdown_artifact_optional(),
     )
 
 
@@ -150,6 +158,7 @@ def analyze(
     news=None,
     distress_artifact: DistressArtifact | None = None,
     calibration: dict | None = None,
+    drawdown_artifact: DrawdownArtifact | None = None,
 ) -> dict:
     """End-to-end per-ticker analysis at ``as_of`` (default: latest price date).
 
@@ -170,6 +179,10 @@ def analyze(
     (passed, or loaded into ``data``) it adds a ``confidence`` block — a 0-100 conviction
     for the call, derived from the model's per-decile OOS hit-rate — computed AFTER the
     score is fixed. Display-only: never a feature, never a trade input.
+
+    ``drawdown_artifact`` (optional): the FIREWALLED large-drawdown risk head. Same contract
+    as distress — adds a ``drawdown`` block (P(deep peak-to-trough fall within the horizon),
+    peer percentile, flag) computed after the score is fixed; display-only, never a trade input.
     """
     data = data or load_serve_data()
     artifact = artifact or load_artifact()
@@ -177,6 +190,8 @@ def analyze(
         else getattr(data, "distress_artifact", None)
     calibration = calibration if calibration is not None \
         else getattr(data, "confidence_calibration", None)
+    drawdown_artifact = drawdown_artifact if drawdown_artifact is not None \
+        else getattr(data, "drawdown_artifact", None)
     cik, column = resolve_company(company, data.ticker_map)
     as_of = pd.Timestamp(as_of) if as_of is not None else data.close.index[-1]
 
@@ -261,6 +276,26 @@ def analyze(
         except (KeyError, ValueError):
             distress = None
 
+    # FIREWALLED large-drawdown read: identical contract to distress — score the SAME
+    # cross-section, attach P(deep peak-to-trough fall within the horizon) + peer percentile
+    # + flag, AFTER the model block is fixed. Display/alert risk-flag only; degrades to None.
+    drawdown = None
+    if drawdown_artifact is not None:
+        try:
+            wprob = pd.Series(drawdown_artifact.score(cross), index=cross.index)
+            target_wp = float(wprob.loc[hit.index[0]])
+            drawdown = {
+                "prob": round(target_wp, 4),
+                "percentile": int(round(float(wprob.rank(pct=True).loc[hit.index[0]]) * 100)),
+                "flag": drawdown_flag(target_wp),
+                "horizon_months": int(drawdown_artifact.meta.get("horizon_months", 6)),
+                "threshold": float(drawdown_artifact.meta.get("threshold", -0.30)),
+                "trained_through": drawdown_artifact.meta.get("trained_through"),
+                "n_names": int(len(cross)),
+            }
+        except (KeyError, ValueError):
+            drawdown = None
+
     result = narrate_packet(packet, llm=llm)
     violations = check_grounding(result["narrative"], packet)  # invariant 3, re-checked here
 
@@ -303,6 +338,7 @@ def analyze(
         "percentile": packet["model"]["percentile"],
         "decile": decile,
         "distress": distress,   # FIREWALLED risk-flag (or None); never touches the signal
+        "drawdown": drawdown,   # FIREWALLED downside-risk flag (or None); never touches the signal
         "confidence": confidence,  # FIREWALLED conviction read (or None); never touches the signal
         "narrative": result["narrative"],
         "reasoning": result.get("reasoning", ""),
