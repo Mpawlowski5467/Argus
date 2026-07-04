@@ -28,14 +28,18 @@
 
   // -- loader → app handshake ------------------------------------------------
   var started = Date.now();
-  function loaderError(msg) {
-    if (el("loader-err")) { el("loader-err").textContent = msg; return; }
-    var d = document.createElement("div");
-    d.id = "loader-err";
-    d.style.cssText = "position:absolute;left:0;right:0;bottom:14%;text-align:center;color:#c68a86;font:13px 'Space Mono',monospace;padding:0 20px";
+  function loaderMsg(msg, tone) {
+    var d = el("loader-err");
+    if (!d) {
+      d = document.createElement("div");
+      d.id = "loader-err";
+      d.style.cssText = "position:absolute;left:0;right:0;bottom:14%;text-align:center;font:13px 'Space Mono',monospace;padding:0 20px";
+      loader.appendChild(d);
+    }
+    d.style.color = tone === "err" ? "#c68a86" : "#8a8a8a";
     d.textContent = msg;
-    loader.appendChild(d);
   }
+  function loaderError(msg) { loaderMsg(msg, "err"); }
   function poll() {
     fetch("/api/status").then(function (r) { return r.json().then(function (b) { return { ok: r.ok, b: b }; }); })
       .then(function (s) {
@@ -163,9 +167,9 @@
       h.push('<div class="tk-head"><span class="name">' + esc(m.name) + '</span><span class="sep">·</span><span class="tk">' +
         esc(m.ticker || "") + '</span><span class="sep">·</span><span class="muted">' + esc(m.sector || "") + '</span>' +
         '<span class="watch-star ' + (t.watched ? "" : "off") + '" id="wstar">' + (t.watched ? "★ watching" : "☆ watch") + "</span></div>");
-      // verdict
+      // verdict + confidence (how much to trust this call, from the model's OOS record)
       h.push('<div class="verdict-row"><span class="badge ' + (v.color || "dim") + '">' + esc(v.call || "N/A") +
-        '</span><span class="reason">' + esc(v.reason || "") + "</span></div>");
+        '</span><span class="reason">' + esc(v.reason || "") + "</span>" + Ticker.confidenceChip(r) + "</div>");
       // AI read — surfaced right under the verdict (the grounded template shows
       // immediately; the button upgrades to the local-model read; a dead LLM degrades
       // back to the template and says so)
@@ -221,6 +225,19 @@
       }));
       el(state.detailTarget).innerHTML = h.join("");
       Ticker.wire();
+    },
+    confidenceChip: function (r) {
+      // How much to trust the BUY/HOLD/AVOID call — a 0-100 conviction DERIVED from the
+      // frozen model's own out-of-sample hit-rate for this decile (capped, never implies
+      // certainty). Absent when no calibration is built. Colored by INTENSITY (neutral),
+      // not buy/sell, so a high-confidence AVOID never reads as a green "good". The
+      // hit-rate it's built from always rides along so the number can't decouple from it.
+      var c = r && r.confidence; if (!c || c.score == null) return "";
+      var tone = c.score >= 55 ? "high" : c.score >= 25 ? "mid" : "low";
+      var hr = c.hit_rate != null ? Math.round(c.hit_rate * 100) : null;
+      var n = c.n ? " (n=" + Number(c.n).toLocaleString() + ")" : "";
+      var note = hr != null ? '<span class="conf-note">beat the market ' + hr + "% of the time OOS" + n + "</span>" : "";
+      return '<span class="conf ' + tone + '" title="how much to trust this call — a 0-100 conviction from the frozen model\'s out-of-sample hit-rate for this decile, capped so it never implies certainty">confidence ' + c.score + "/100</span>" + note;
     },
     aiReadBlock: function (t, r) {
       // narr = the local-model result once generated (via /narrate), else null.
@@ -353,14 +370,25 @@
       // 1 · NOW — reuse the deterministic BUY / HOLD / AVOID verdict
       h += '<div class="hp"><div class="hp-h">now · this month\'s call</div><div class="hp-body">' +
         '<span class="badge ' + (v.color || "dim") + '">' + esc(v.call || "N/A") + "</span> " +
-        '<span class="muted">' + (pct != null ? pct + "th pct" : "—") + "</span>" +
+        '<span class="muted">' + (pct != null ? pct + "th pct" : "—") + "</span> " +
+        Ticker.confidenceChip(r) +
         '<div class="hp-reason">' + esc(v.reason || "") + "</div></div></div>";
-      // 2 · ~12-MONTH — distress flag (omit gracefully if the head isn't on this build)
-      //     + a fundamentals-trajectory hint from the sum of SHAP drivers.
+      // 2 · DOWNSIDE RISK — large-drawdown head (~6mo) + distress flag (~12mo) + a
+      //     fundamentals-trajectory hint from the sum of SHAP drivers. Each omits gracefully.
       var dist = r.distress || pk.distress;
+      var draw = r.drawdown || pk.drawdown;
       var drivers = pk.drivers || model.drivers || [];
-      if ((dist && dist.flag) || drivers.length) {
-        h += '<div class="hp"><div class="hp-h">~12-month risk</div><div class="hp-body">';
+      if ((draw && draw.flag) || (dist && dist.flag) || drivers.length) {
+        h += '<div class="hp"><div class="hp-h">downside risk</div><div class="hp-body">';
+        if (draw && draw.flag) {
+          var wcls = draw.flag === "high" ? "neg" : draw.flag === "elevated" ? "warn" : "muted";
+          var thr = draw.threshold != null ? Math.round(Math.abs(draw.threshold) * 100) : 30;
+          h += '<div>drawdown risk <span class="' + wcls + '">' + esc(draw.flag) + "</span>" +
+            (draw.prob != null ? ' <span class="muted">P≈' + (draw.prob * 100).toFixed(0) + "%" +
+              (draw.percentile != null ? " · " + draw.percentile + "th pct of peers" : "") + "</span>" : "") +
+            '<div class="hp-reason">learned P(a ' + thr + "%+ peak-to-trough fall within ~" + (draw.horizon_months || 6) +
+            "mo) — a display-only risk flag, never a trade input</div></div>";
+        }
         if (dist && dist.flag) {
           var dcls = dist.flag === "high" ? "neg" : dist.flag === "elevated" ? "warn" : "muted";
           h += '<div>distress risk <span class="' + dcls + '">' + esc(dist.flag) + "</span>" +
@@ -652,6 +680,35 @@
     loader.style.display = "block"; loader.classList.remove("hide");
     started = Date.now();
     apiPost("/refresh").then(poll).catch(poll);
+  });
+
+  // "update data" — run the nightly job now (pull fresh prices/filings/news), then a full
+  // reload from disk. The mandala loader covers the whole thing; we poll for completion.
+  function nightlyPoll() {
+    fetch("/api/nightly").then(function (r) { return r.json(); }).then(function (s) {
+      if (s.running) {
+        var e = s.elapsed || 0;
+        loaderMsg("updating data — pulling fresh prices, filings & news … (" +
+          Math.floor(e / 60) + "m " + Math.floor(e % 60) + "s)");
+        setTimeout(nightlyPoll, 3000);
+        return;
+      }
+      if (s.returncode && s.returncode !== 0) {
+        loaderMsg("update failed (exit " + s.returncode + ") — data unchanged. see data/logs/nightly.web.log", "err");
+        return;
+      }
+      loaderMsg("data updated — reloading …");
+      started = Date.now();
+      apiPost("/reload").then(poll).catch(poll);   // full reload picks up the new data
+    }).catch(function () { setTimeout(nightlyPoll, 3000); });
+  }
+  el("btn-update").addEventListener("click", function () {
+    loader.style.display = "block"; loader.classList.remove("hide");
+    loaderMsg("starting data update …");
+    apiPost("/nightly").then(function (s) {
+      if (s && s.already) loaderMsg("an update is already running — waiting for it …");
+      nightlyPoll();
+    }).catch(function (e) { loaderMsg("could not start update — " + (e.message || e), "err"); });
   });
 
   window.addEventListener("resize", function () { if (state.view === "ticker") Ticker.drawChart(); });

@@ -263,3 +263,27 @@ def refresh():
         raise HTTPException(status_code=503, detail="loading")
     STATE.refresh()
     return {"ok": True}
+
+
+# -- on-demand data update ("update data" button) ----------------------------
+# Runs the SAME nightly dispatcher launchd runs, as a self-guarded subprocess: pull fresh
+# prices / filings / news now, then POST /reload swaps in the new data. The scheduled nightly
+# is unaffected — both take the repo-wide ops flock, so they can never overlap.
+@router.post("/nightly")
+def nightly_run():
+    if STATE.status != "ready":
+        raise HTTPException(status_code=503, detail="loading")
+    return STATE.start_nightly()
+
+
+@router.get("/nightly")
+def nightly_status():
+    return STATE.nightly_status()
+
+
+@router.post("/reload")
+def reload_facade():
+    """Full reload from disk (after a nightly update) — rebuilds the scored cross-section
+    from freshly-ingested data. The loader/poll handshake covers the reload."""
+    STATE.reload()
+    return {"ok": True}
