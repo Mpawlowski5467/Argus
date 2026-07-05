@@ -628,6 +628,23 @@ class ArgusData:
         return {**r, "cik": int(cik), "ticker": m.get("ticker"), "name": m.get("name"),
                 "n_news": len(ctx or [])}
 
+    def ask_book(self, question: str, history: list | None = None, llm=None) -> dict:
+        """Grounded chat about the BOOK — the scorecard made interactive (web ask box).
+
+        Same contract as :meth:`ask`, one level up: the grounding context is exactly
+        the scorecard the book tab shows, widened only with display-rounded citable
+        twins (assist.book.build_book_context). Every numeral in the answer must
+        trace to it or the assistant refuses — never a guess, never a portfolio
+        forecast, never advice. ``history`` rides in from the browser (the server
+        stays stateless) and never expands the grounding domain."""
+        from ..assist.book import answer_about_book
+        from ..narrate.llm import LocalLLM
+
+        sc = self.scorecard()
+        r = answer_about_book(sc, question, llm or LocalLLM(timeout=180.0),
+                              history=history)
+        return {**r, "n_names": sc.get("n_total", 0), "as_of": sc.get("as_of")}
+
     def watch(self) -> dict:
         from ..ops.state import OpsState
 

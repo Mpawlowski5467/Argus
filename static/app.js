@@ -746,6 +746,9 @@
   // concentration — with the full holdings list ALWAYS shown so no single number
   // stands in for the distribution. Never a portfolio forecast.
   var Scorecard = {
+    // ask-chat state lives HERE (not in the DOM) so tab switches and reload
+    // re-renders keep the transcript; mirrors the ticker ask's state.tk precedent.
+    data: null, chat: [], asking: false, askDraft: "", askPending: null, askNote: null, askFocus: false,
     load: function () {
       el("scorecard-body").innerHTML = '<div class="muted">loading …</div>';
       api("/scorecard").then(Scorecard.render).catch(function (e) {
@@ -769,6 +772,7 @@
       return h.join("") + "</div>";
     },
     render: function (sc) {
+      Scorecard.data = sc;
       if (!sc || !sc.n_total) {
         el("scorecard-body").innerHTML = '<div class="empty">Nothing tracked yet — star a stock to watch it (☆ on a ticker page), or add shares under <b>your position</b>. Watched names show here with their model standing; add shares to any to get value &amp; P/L.</div>';
         return;
@@ -845,10 +849,90 @@
       });
       h.push("</tbody></table>");
 
+      // grounded chat over the BOOK — the scorecard made interactive; same honesty
+      // contract as the ticker ask, at aggregate level: it answers from this tab's
+      // data (both weightings, snapshot not outlook) or refuses; never advice.
+      h.push(Scorecard.askBlock());
+
       el("scorecard-body").innerHTML = h.join("");
       Array.prototype.forEach.call(document.querySelectorAll("#sc-table tbody tr"), function (tr) {
         tr.addEventListener("click", function () { Ticker.open(+tr.dataset.cik); });
       });
+      Scorecard.wireAsk();
+    },
+    askBlock: function () {
+      var chat = Scorecard.chat || [];
+      var busy = Scorecard.asking;
+      var h = '<div class="ai-read ask"><div class="ai-read-head"><span class="ai-tag">ask the book</span>' +
+        '<span class="ai-status muted">grounded chat — it answers from this scorecard\'s data or refuses; a snapshot, not advice</span></div>';
+      if (!chat.length && !busy) {
+        h += '<div class="ask-sugs">' + ["where does my book rank?", "how concentrated am I?", "which names are risk-flagged?", "what's my unrealized P/L?"].map(function (q) {
+          return '<span class="ask-sug bk-ask-sug" data-q="' + esc(q) + '">' + esc(q) + "</span>";
+        }).join("") + "</div>";
+      }
+      chat.forEach(function (turn) {
+        h += '<div class="ask-q">' + esc(turn.q) + "</div>";
+        if (turn.offline) {
+          h += '<div class="ask-a"><span class="warn">the local model is unreachable — start Ollama (or set STOCKSCAN_LLM_URL), then ask again.</span></div>';
+        } else {
+          h += '<div class="ask-a' + (turn.refused ? " refused" : "") + '">' + esc(turn.a) +
+            (turn.refused ? ' <span class="warn">[refused — not in this book\'s data]</span>' : "") + "</div>";
+        }
+      });
+      if (busy) {
+        if (Scorecard.askPending) h += '<div class="ask-q">' + esc(Scorecard.askPending) + "</div>";
+        h += '<div class="ask-a muted">thinking … (local model)</div>';
+      }
+      h += '<div class="ask-form"><input id="bk-ask-q" placeholder="ask about the numbers on this scorecard …" autocomplete="off" value="' + esc(Scorecard.askDraft || "") + '"' + (busy ? " disabled" : "") + ">" +
+        '<button class="mini" id="btn-bk-ask"' + (busy ? " disabled" : "") + ">ask</button></div>";
+      if (Scorecard.askNote) h += '<div class="ask-flash warn">' + esc(Scorecard.askNote) + "</div>";
+      return h + "</div>";
+    },
+    wireAsk: function () {
+      // draft + focus survive re-renders (mirrors the ticker ask box); distinct
+      // ids/classes so the hidden ticker view's ask box never cross-wires.
+      var aq = el("bk-ask-q");
+      if (aq) {
+        aq.oninput = function () { Scorecard.askDraft = aq.value; };
+        aq.onfocus = function () { Scorecard.askFocus = true; };
+        aq.onblur = function () { Scorecard.askFocus = false; };
+        aq.onkeydown = function (e) { if (e.key === "Enter") { e.preventDefault(); Scorecard.ask(aq.value); } };
+        if (Scorecard.askFocus && document.activeElement !== aq) {
+          aq.focus();
+          var L = aq.value.length; try { aq.setSelectionRange(L, L); } catch (x) {}
+        }
+      }
+      var ab = el("btn-bk-ask"); if (ab) ab.onclick = function () { var i = el("bk-ask-q"); Scorecard.ask(i ? i.value : ""); };
+      Array.prototype.forEach.call(document.querySelectorAll(".bk-ask-sug"), function (s) {
+        s.addEventListener("click", function () { Scorecard.ask(s.dataset.q); });
+      });
+    },
+    rerender: function () { if (Scorecard.data) Scorecard.render(Scorecard.data); },
+    ask: function (q) {
+      q = String(q == null ? "" : q).trim();
+      if (!q || Scorecard.asking) return;
+      Scorecard.askDraft = ""; Scorecard.askNote = null; Scorecard.askPending = q;
+      Scorecard.asking = true;
+      Scorecard.rerender();
+      // history = the browser's own transcript (server is stateless); refused and
+      // offline turns are dropped, and it's capped to the last 4 Q&As
+      var history = [];
+      (Scorecard.chat || []).forEach(function (turn) {
+        if (!turn.refused && !turn.offline) history.push({ role: "user", content: turn.q }, { role: "assistant", content: turn.a });
+      });
+      var done = function (turn, note) {
+        Scorecard.asking = false;
+        if (turn) Scorecard.chat = (Scorecard.chat || []).concat([turn]);
+        Scorecard.askPending = null;
+        Scorecard.askNote = note || null;
+        Scorecard.rerender();
+      };
+      apiPost("/ask/book", { question: q, history: history.slice(-8) }).then(function (d) {
+        if (d && d.busy) { done(null, "the local model is busy with another request — try again in a moment"); return; }
+        if (!d || d.answer == null) { done({ q: q, offline: true }); return; }
+        var offline = (d.violations || []).some(function (v) { return String(v).indexOf("llm-error") === 0; });
+        done({ q: q, a: d.answer, refused: !!d.refused && !offline, offline: offline });
+      }).catch(function () { done({ q: q, offline: true }); });
     },
   };
 
