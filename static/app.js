@@ -1,5 +1,6 @@
-/* argus-web — router, fetch layer, view controllers, keyboard nav.
-   Mirrors the Textual TUI: loader → scan(1) ticker(2) watch(3) paper(4) markets(5). */
+/* argus-web — router, fetch layer, view controllers.
+   loader → tabs (scan · watch · book · paper · markets); click any name for the
+   company view. "?" opens help; the .term glossary explains every number on hover. */
 (function () {
   "use strict";
 
@@ -25,6 +26,47 @@
   var app = el("app"), loader = el("loader");
   var state = { view: "scan", cik: null, chart: "candle", tk: null, auto: null, marketsLoaded: false, detailTarget: "tk-body", narrating: null };
   function heat(d) { d = d || 0; if (d >= 9) return "#3f6b4e"; if (d >= 7) return "#4a7359"; if (d >= 5) return "#484848"; if (d >= 3) return "#78504d"; return "#693f3f"; }
+
+  // -- glossary: ONE source of truth for what every number means (deterministic; no
+  // LLM, no latency, nothing to fabricate). Any element with class="term" and a
+  // data-g key gets the matching plain-English tooltip on hover — including static
+  // markup in index.html. Wording keeps the house honesty rules: peer rank ≠
+  // forecast; risk heads are display-only; confidence never decouples from its
+  // hit-rate.
+  var GLOSS = {
+    model: "The model signal is a RELATIVE rank from a frozen statistical model — where this name's score lands among all scored peers today. Not a predicted return, not a price target.",
+    pct: "Percentile, 0–100 — the share of scored peers this name ranks above today. 90th = ahead of 90% of the market. A peer rank, not a probability of gains.",
+    decile: "The percentile bucketed 1–10 (10 = top tenth of all scored names). The backtest's long book buys from the top quintile — deciles 9–10.",
+    score: "The frozen model's raw output. Only its RANK against peers means anything — the magnitude has no unit and no dollar meaning.",
+    shap: "SHAP splits this exact score into per-fundamental contributions that sum to it — which inputs pushed the rank up or down. An attribution of the rank, not a forecast.",
+    signals: "Pre-computed fundamentals with sector percentiles. Each carries its own read (supports / detracts) decided by the pipeline — a HIGH percentile on a lower-is-better signal like leverage counts AGAINST the name.",
+    confidence: "How much to trust this call: 0–100, derived from how often this decile actually beat the market out-of-sample (the hit-rate shown beside it). Capped — never certainty.",
+    distress: "A learned probability of distress or delisting within ~12 months, from a separate firewalled model. A display-only risk flag — never a trade input.",
+    drawdownRisk: "A learned probability of a deep (~30%+) peak-to-trough fall within ~6 months. A display-only risk flag — never a trade input.",
+    ic: "Prediction accuracy = rank correlation between predicted and realized returns for a month. 0 is a coin-flip; small positive numbers are normal — the sign and the trend matter, not the size.",
+    insample: "This date falls inside the model's training window, so the score may flatter itself. Only out-of-sample months are the honest test.",
+    stale: "How old the filing behind this analysis is. Fundamentals move slowly, but a very stale 10-K means the model is reading old news.",
+    adv: "Average daily dollar volume — how much of this name trades per day. The universe floor screens out names too illiquid to trade.",
+    equalweight: "Every tracked name counts the same, regardless of position size — the spread-out view of your book.",
+    valueweight: "Names weighted by the dollar value of your position — the view of where your money actually sits.",
+  };
+  function term(key, label) { return '<span class="term" data-g="' + key + '">' + label + "</span>"; }
+  (function () {   // one shared tooltip, event-delegated so re-rendered views keep working
+    var tip = document.createElement("div");
+    tip.id = "gloss-tip"; tip.hidden = true;
+    document.body.appendChild(tip);
+    document.addEventListener("mouseover", function (e) {
+      var t = e.target && e.target.closest ? e.target.closest(".term") : null;
+      var g = t && GLOSS[t.dataset.g];
+      if (!g) { tip.hidden = true; return; }
+      tip.textContent = g; tip.hidden = false;
+      var r = t.getBoundingClientRect();
+      var y = r.bottom + 6;
+      if (y + tip.offsetHeight > window.innerHeight - 8) y = r.top - tip.offsetHeight - 6;
+      tip.style.left = Math.max(8, Math.min(r.left, window.innerWidth - tip.offsetWidth - 12)) + "px";
+      tip.style.top = y + "px";
+    });
+  })();
 
   // -- loader → app handshake ------------------------------------------------
   var started = Date.now();
@@ -137,7 +179,7 @@
       switchView("ticker");
       el("tk-body").innerHTML = '<div class="muted">loading …</div>';
       api("/ticker/" + cik).then(function (res) {
-        state.tk = { res: res, price: null, ohlc: null, quote: null, profile: null, events: null, news: null, watched: false, narr: null, position: null, posDraft: null };
+        state.tk = { res: res, price: null, ohlc: null, quote: null, profile: null, events: null, news: null, watched: false, narr: null, position: null, posDraft: null, chat: [], askDraft: "", askNote: null };
         Ticker.render();
         Promise.all([
           api("/price/" + cik).then(function (d) { state.tk.price = d; }).catch(nop),
@@ -182,16 +224,17 @@
       h.push(Ticker.positionBlock(t));
       // filing + model line
       if (f.filed_date) h.push('<div class="muted" style="margin-top:12px">FY' + esc(m.fiscal_year) + " 10-K filed " + esc(f.filed_date) +
-        " (usable " + esc(f.available_date) + ", " + esc(f.staleness_days) + "d old)</div>");
-      var insample = f.in_sample ? ' <span class="warn">[in-sample]</span>' : "";
-      var liq = f.liquidity_pass === false ? ' <span class="neg">[below liquidity floor]</span>' : "";
-      h.push('<div style="margin-top:8px">model signal <b>' + (pct != null ? pct + "th pct" : "—") + "</b> · decile " + (dec || "—") +
-        "/10 · score " + (score != null ? (score >= 0 ? "+" : "") + Number(score).toFixed(4) : "—") +
+        " (usable " + esc(f.available_date) + ", " + term("stale", esc(f.staleness_days) + "d old") + ")</div>");
+      var insample = f.in_sample ? ' <span class="warn">' + term("insample", "[in-sample]") + "</span>" : "";
+      var liq = f.liquidity_pass === false ? ' <span class="neg">' + term("adv", "[below liquidity floor]") + "</span>" : "";
+      h.push('<div style="margin-top:8px">' + term("model", "model signal") + " <b>" + (pct != null ? term("pct", pct + "th pct") : "—") + "</b> · " +
+        term("decile", "decile " + (dec || "—") + "/10") + " · " +
+        term("score", "score " + (score != null ? (score >= 0 ? "+" : "") + Number(score).toFixed(4) : "—")) +
         (trained ? " · trained through " + esc(trained) : "") + insample + liq + "</div>");
       // drivers (SHAP) if present
       var drivers = pk.drivers || model.drivers;
       if (drivers && drivers.length) {
-        h.push('<div class="section-h">drivers (SHAP — exact decomposition)</div><div class="drivers">');
+        h.push('<div class="section-h">' + term("shap", "drivers (SHAP — exact decomposition)") + '</div><div class="drivers">');
         var mx = Math.max.apply(null, drivers.map(function (d) { return Math.abs(d.contribution || 0); })) || 1;
         drivers.forEach(function (d) {
           var pos = (d.direction || "").indexOf("support") === 0 || (d.contribution || 0) >= 0;
@@ -205,7 +248,7 @@
       // signals
       var sigs = pk.signals || [];
       if (sigs.length) {
-        h.push('<div class="section-h">signals</div><div class="signals"><table class="grid"><tbody>');
+        h.push('<div class="section-h">' + term("signals", "signals") + '</div><div class="signals"><table class="grid"><tbody>');
         sigs.forEach(function (s) {
           var read = s.read || "";
           var cls = read === "supports" ? "pos" : read === "detracts" ? "neg" : "muted";
@@ -219,6 +262,8 @@
       // breakdown (drivers + signals). The grounded template shows immediately; the
       // button upgrades to the local-model read; a dead LLM degrades back and says so.
       h.push(Ticker.aiReadBlock(t, r));
+      // grounded chat — the narration made interactive; refuses over fabricating
+      h.push(Ticker.askBlock(t));
       // news + events
       h.push(Ticker.enrichBlock("news memory (Intrinio)", t.news, function (a) {
         return '<span class="date">' + esc(a.date) + "</span>  " + (a.event_type && a.event_type !== "other" ? '<span class="ev">' + esc(a.event_type) + "</span> " : "") +
@@ -241,7 +286,7 @@
       var hr = c.hit_rate != null ? Math.round(c.hit_rate * 100) : null;
       var n = c.n ? " (n=" + Number(c.n).toLocaleString() + ")" : "";
       var note = hr != null ? '<span class="conf-note">beat the market ' + hr + "% of the time OOS" + n + "</span>" : "";
-      return '<span class="conf ' + tone + '" title="how much to trust this call — a 0-100 conviction from the frozen model\'s out-of-sample hit-rate for this decile, capped so it never implies certainty">confidence ' + c.score + "/100</span>" + note;
+      return '<span class="conf term ' + tone + '" data-g="confidence">confidence ' + c.score + "/100</span>" + note;
     },
     aiReadBlock: function (t, r) {
       // narr = the local-model result once generated (via /narrate), else null.
@@ -268,6 +313,68 @@
         '<span class="ai-note">a local LLM’s opinion, grounded to the filing (plus any news it cites) — not a price forecast</span></div>';
       return h + "</div>";
     },
+    // -- ask: grounded chat over THIS name's computed data --------------------
+    // Same honesty contract as the AI read, made conversational: the local model
+    // answers ONLY from the packet + the display reads + recalled news; a made-up
+    // number is caught server-side and it refuses instead. Transcript and draft
+    // live on state.tk so async re-renders can't wipe them (posDraft precedent).
+    askBlock: function (t) {
+      var chat = t.chat || [];
+      var busy = state.asking === state.cik;
+      var h = '<div class="ai-read ask"><div class="ai-read-head"><span class="ai-tag">ask</span>' +
+        '<span class="ai-status muted">grounded chat — it answers from this page\'s data or refuses; not advice</span></div>';
+      if (!chat.length && !busy) {
+        h += '<div class="ask-sugs">' + ["why is it ranked here?", "what changed since last year?", "what are the risk flags?", "what does the news say?"].map(function (q) {
+          return '<span class="ask-sug" data-q="' + esc(q) + '">' + esc(q) + "</span>";
+        }).join("") + "</div>";
+      }
+      chat.forEach(function (turn) {
+        h += '<div class="ask-q">' + esc(turn.q) + "</div>";
+        if (turn.offline) {
+          h += '<div class="ask-a"><span class="warn">the local model is unreachable — start Ollama (or set STOCKSCAN_LLM_URL), then ask again.</span></div>';
+        } else {
+          h += '<div class="ask-a' + (turn.refused ? " refused" : "") + '">' + esc(turn.a) +
+            (turn.refused ? ' <span class="warn">[refused — not in this name\'s data]</span>' : "") + "</div>";
+        }
+      });
+      if (busy) {
+        if (t.askPending) h += '<div class="ask-q">' + esc(t.askPending) + "</div>";
+        h += '<div class="ask-a muted">thinking … (local model)</div>';
+      }
+      h += '<div class="ask-form"><input id="ask-q" placeholder="ask about the numbers on this page …" autocomplete="off" value="' + esc(t.askDraft || "") + '"' + (busy ? " disabled" : "") + ">" +
+        '<button class="mini" id="btn-ask"' + (busy ? " disabled" : "") + ">ask</button></div>";
+      if (t.askNote) h += '<div class="ask-flash warn">' + esc(t.askNote) + "</div>";
+      return h + "</div>";
+    },
+    ask: function (q) {
+      var cik = state.cik, t = state.tk;
+      if (!cik || !t) return;
+      q = String(q == null ? "" : q).trim();
+      if (!q || state.asking === cik) return;
+      t.askDraft = ""; t.askNote = null; t.askPending = q;
+      state.asking = cik;
+      Ticker.render();
+      // history = the browser's own transcript (server is stateless); refused and
+      // offline turns are dropped, like ask.py's REPL, and capped to the last 4 Q&As
+      var history = [];
+      (t.chat || []).forEach(function (turn) {
+        if (!turn.refused && !turn.offline) history.push({ role: "user", content: turn.q }, { role: "assistant", content: turn.a });
+      });
+      var done = function (turn, note) {
+        if (state.asking === cik) state.asking = null;
+        if (state.cik !== cik || !state.tk) return;   // user moved on — don't clobber
+        if (turn) state.tk.chat = (state.tk.chat || []).concat([turn]);
+        state.tk.askPending = null;
+        state.tk.askNote = note || null;
+        Ticker.render();
+      };
+      apiPost("/ask/" + cik, { question: q, history: history.slice(-8) }).then(function (d) {
+        if (d && d.busy) { done(null, "the local model is busy with another request — try again in a moment"); return; }
+        if (!d || d.answer == null) { done({ q: q, offline: true }); return; }
+        var offline = (d.violations || []).some(function (v) { return String(v).indexOf("llm-error") === 0; });
+        done({ q: q, a: d.answer, refused: !!d.refused && !offline, offline: offline });
+      }).catch(function () { done({ q: q, offline: true }); });
+    },
     profileBlock: function (p) {
       if (p == null) return '<div class="muted" style="margin-top:8px">company profile · loading …</div>';
       if (!p || !p.description) return "";
@@ -285,7 +392,7 @@
       var h = "";
       if (pr && pr.summary && pr.points && pr.points.length > 1) {
         var s = pr.summary;
-        var adv = s.adv ? " · ADV $" + (s.adv / 1e6).toFixed(1) + "M" : "";
+        var adv = s.adv ? " · " + term("adv", "ADV $" + (s.adv / 1e6).toFixed(1) + "M") : "";
         h += '<div class="price-line"><span class="last"><b>' + Number(s.last).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + "</b></span>" +
           '<span>1m <span class="' + pctColor(s.chg_1m) + '">' + sign(s.chg_1m) + "</span></span>" +
           '<span>3m <span class="' + pctColor(s.chg_3m) + '">' + sign(s.chg_3m) + "</span></span>" +
@@ -387,7 +494,7 @@
         if (draw && draw.flag) {
           var wcls = draw.flag === "high" ? "neg" : draw.flag === "elevated" ? "warn" : "muted";
           var thr = draw.threshold != null ? Math.round(Math.abs(draw.threshold) * 100) : 30;
-          h += '<div>drawdown risk <span class="' + wcls + '">' + esc(draw.flag) + "</span>" +
+          h += "<div>" + term("drawdownRisk", "drawdown risk") + ' <span class="' + wcls + '">' + esc(draw.flag) + "</span>" +
             (draw.prob != null ? ' <span class="muted">P≈' + (draw.prob * 100).toFixed(0) + "%" +
               (draw.percentile != null ? " · " + draw.percentile + "th pct of peers" : "") + "</span>" : "") +
             '<div class="hp-reason">learned P(a ' + thr + "%+ peak-to-trough fall within ~" + (draw.horizon_months || 6) +
@@ -395,7 +502,7 @@
         }
         if (dist && dist.flag) {
           var dcls = dist.flag === "high" ? "neg" : dist.flag === "elevated" ? "warn" : "muted";
-          h += '<div>distress risk <span class="' + dcls + '">' + esc(dist.flag) + "</span>" +
+          h += "<div>" + term("distress", "distress risk") + ' <span class="' + dcls + '">' + esc(dist.flag) + "</span>" +
             (dist.prob != null ? ' <span class="muted">P≈' + (dist.prob * 100).toFixed(1) + "%" +
               (dist.percentile != null ? " · " + dist.percentile + "th pct of peers" : "") + "</span>" : "") +
             '<div class="hp-reason">learned P(distress / delist within ~' + (dist.horizon_months || 12) +
@@ -470,6 +577,22 @@
       var prm = el("btn-pos-remove"); if (prm) prm.onclick = Ticker.removePosition;
       var psh = el("pos-shares"); if (psh) psh.oninput = Ticker.onPosInput;
       var pco = el("pos-cost"); if (pco) pco.oninput = Ticker.onPosInput;
+      // ask box: draft + focus survive the async re-renders (quote/profile/news arrivals)
+      var aq = el("ask-q");
+      if (aq) {
+        aq.oninput = function () { if (state.tk) state.tk.askDraft = aq.value; };
+        aq.onfocus = function () { state.askFocus = true; };
+        aq.onblur = function () { state.askFocus = false; };
+        aq.onkeydown = function (e) { if (e.key === "Enter") { e.preventDefault(); Ticker.ask(aq.value); } };
+        if (state.askFocus && document.activeElement !== aq) {
+          aq.focus();
+          var L = aq.value.length; try { aq.setSelectionRange(L, L); } catch (x) {}
+        }
+      }
+      var ab = el("btn-ask"); if (ab) ab.onclick = function () { var i = el("ask-q"); Ticker.ask(i ? i.value : ""); };
+      Array.prototype.forEach.call(document.querySelectorAll(".ask-sug"), function (s) {
+        s.addEventListener("click", function () { Ticker.ask(s.dataset.q); });
+      });
       Ticker.updatePL();
     },
     toggleChart: function () { state.chart = state.chart === "candle" ? "line" : "candle"; Ticker.render(); },
@@ -600,7 +723,7 @@
         var h = ['<div class="section-h">watchlist</div>'];
         if (!w.rows.length) h.push('<div class="empty">watchlist empty — use <code>ops.py watch add</code></div>');
         else {
-          h.push('<table class="grid" id="watch-table"><thead><tr><th>ticker</th><th class="num">model</th><th class="num">Δ 30d</th><th>last 10-K</th><th>flag</th></tr></thead><tbody>');
+          h.push('<table class="grid" id="watch-table"><thead><tr><th>ticker</th><th class="num">' + term("pct", "model") + '</th><th class="num">Δ 30d</th><th>last 10-K</th><th>flag</th></tr></thead><tbody>');
           w.rows.forEach(function (r) {
             h.push('<tr data-cik="' + r.cik + '"><td class="tk">' + esc(r.ticker) + '</td><td class="num">' + (r.pct != null ? r.pct + "%" : "—") +
               '</td><td class="num ' + pctColor(r.delta) + '">' + (r.delta != null ? (r.delta >= 0 ? "+" : "") + r.delta : "—") + "</td><td class=\"muted\">" +
@@ -670,9 +793,9 @@
       // model standing — BOTH weightings, side by side
       h.push('<div class="section-h">model standing · where your names rank vs. peers</div>');
       h.push('<div class="sc-stats"><div class="sc-stat"><div class="sc-big">' + Scorecard.pctCell(sc.percentile_equal) +
-        '</div><div class="sc-lab">equal-weight · all tracked names</div></div>' +
+        '</div><div class="sc-lab">' + term("equalweight", "equal-weight") + " · all tracked names</div></div>" +
         '<div class="sc-stat"><div class="sc-big">' + Scorecard.pctCell(sc.percentile_value) +
-        '</div><div class="sc-lab">' + (sc.percentile_value == null ? "value-weight · add shares to enable" : "value-weighted · your holdings by size") + "</div></div></div>");
+        '</div><div class="sc-lab">' + (sc.percentile_value == null ? term("valueweight", "value-weight") + " · add shares to enable" : term("valueweight", "value-weighted") + " · your holdings by size") + "</div></div></div>");
       h.push('<div class="hp-reason">Both are shown on purpose — equal-weight treats every name the same; value-weight leans on where your money actually sits. A peer-rank percentile, not a return estimate.</div>');
 
       // distress exposure (only when the risk head is loaded)
@@ -700,7 +823,7 @@
       h.push('<div class="section-h">names · ' + sc.n_owned + " held, " + sc.n_watch + " watched</div>");
       h.push('<table class="grid" id="sc-table"><thead><tr>' +
         "<th>ticker</th><th>name</th><th>industry</th><th class=\"num\">shares</th>" +
-        "<th class=\"num\">value</th><th class=\"num\">model</th><th class=\"num\">dec</th><th>risk</th><th class=\"num\">P/L</th>" +
+        '<th class="num">value</th><th class="num">' + term("pct", "model") + '</th><th class="num">' + term("decile", "dec") + "</th><th>" + term("distress", "risk") + '</th><th class="num">P/L</th>' +
         "</tr></thead><tbody>");
       sc.holdings.slice().sort(function (a, b) { return (b.owned ? 1 : 0) - (a.owned ? 1 : 0); }).forEach(function (p) {
         var flag = p.dflag && p.dflag !== "normal"
@@ -768,7 +891,7 @@
         if (deg == null) h += ' <span class="muted">— need ~6 clean months before we can judge on-track vs. degraded.</span>';
         h += "</p>";
         // trend — sparkline once months are graded, else a plain placeholder
-        h += '<div class="section-h">accuracy by graded month</div>';
+        h += '<div class="section-h">' + term("ic", "accuracy by graded month") + "</div>";
         if (ics.length) {
           h += '<canvas class="spark" id="paper-spark"></canvas>';
           h += '<div class="muted" style="font-size:12px;margin-top:4px">Each point is one graded month — higher is better.</div>';

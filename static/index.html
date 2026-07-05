@@ -39,7 +39,8 @@
         <table class="grid" id="scan-table">
           <thead><tr>
             <th class="num">#</th><th>ticker</th><th>name</th><th>sector</th>
-            <th class="num">model</th><th class="num">dec</th><th class="num">fy</th>
+            <th class="num"><span class="term" data-g="pct">model</span></th>
+            <th class="num"><span class="term" data-g="decile">dec</span></th><th class="num">fy</th>
           </tr></thead>
           <tbody></tbody>
         </table>
@@ -67,12 +68,15 @@
 
       <h3>The five tabs</h3>
       <ul class="help-list">
-        <li><b>scan</b> — the whole tradable market, ranked. Click a name to inspect it on the right.</li>
-        <li><b>ticker</b> — one company in depth: verdict, AI read, price, model drivers, signals, news.</li>
+        <li><b>scan</b> — the whole tradable market, ranked.</li>
         <li><b>watch</b> — names you're tracking, plus alerts when something changes.</li>
+        <li><b>book</b> — your holdings and watchlist as one scorecard: value, P/L, model standing, risk flags.</li>
         <li><b>paper</b> — how the frozen model is holding up out-of-sample vs. its backtest.</li>
         <li><b>markets</b> — the top picks grouped by industry and theme, sized by market cap.</li>
       </ul>
+      <p>Click any name anywhere to open the <b>company view</b> — verdict, price, your position,
+        model drivers, signals, AI read, grounded chat, and news. Words with a <span style="border-bottom:1px dashed #565656">dashed underline</span>
+        explain themselves on hover.</p>
 
       <h3>BUY · HOLD · AVOID</h3>
       <p>The verdict is nothing more than the company's <b>cross-sectional percentile</b> — where its model
@@ -88,11 +92,15 @@
         <b>Percentile</b> runs 0–100 (higher = ranked above more peers); <b>decile</b> buckets that into 1–10.
         The <b>drivers</b> (SHAP) show exactly which fundamentals pushed the score up or down.</p>
 
-      <h3>The AI read</h3>
-      <p>The <b>AI read</b> near the top of a ticker is a <b>local language model's</b> plain-English opinion,
-        <b>grounded to that company's filing</b> (and, when available, recent news it explicitly attributes to a
-        source). It's an interpretation of the data — <b>not a price forecast</b>. If the local model isn't
-        running you'll see a <i>grounded template</i> instead; click <i>Generate local-model read</i> to run it.</p>
+      <h3>The AI read &amp; ask</h3>
+      <p>The <b>AI read</b> (after the drivers and signals on a company view) is a <b>local language model's</b>
+        plain-English opinion, <b>grounded to that company's filing</b> (and, when available, recent news it
+        explicitly attributes to a source). It's an interpretation of the data — <b>not a price forecast</b>.
+        If the local model isn't running you'll see a <i>grounded template</i> instead; click
+        <i>Generate local-model read</i> to run it.</p>
+      <p><b>ask</b> is the same contract made conversational: question by question, it answers <b>only from
+        that company's computed data</b> — every number in the reply is checked against the data, and when the
+        answer isn't in there it <b>refuses instead of guessing</b>. No buy/sell advice, no price targets.</p>
 
       <p class="help-foot">Press <b>Esc</b> or click outside this box to close · <b>?</b> reopens it anytime.</p>
     </div>
