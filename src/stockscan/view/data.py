@@ -11,6 +11,7 @@ curation, delegated to :class:`~stockscan.ops.state.OpsState`.
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 
 import numpy as np
@@ -221,6 +222,9 @@ class ArgusData:
             cross["dprob"] = dart.score(cross)
             cross["dflag"] = [distress_flag(p) for p in cross["dprob"]]
         self._cross = cross
+        # the per-cik analyze cache mirrors _cross: a rebuilt cross-section must drop
+        # it, or /ask and /narrate would keep answering from the pre-update ranks
+        self.__dict__.pop("_analyze_cache", None)
 
     # -- view data ---------------------------------------------------------------
     def sectors(self) -> list[str]:
@@ -534,29 +538,63 @@ class ArgusData:
         return build_scorecard(entries, self._cross, prices, as_of=self.as_of)
 
     def ticker(self, query, as_of=None) -> dict:
-        """Full per-name analysis (deterministic; template narration included)."""
+        """Full per-name analysis (deterministic; template narration included).
+
+        Session-cached per cik at the loaded as-of: analyze() re-scores the whole
+        cross-section (~seconds), and the ticker page, /narrate and /ask each need
+        the SAME result — one analyze per name per session, not one per call. The
+        cache stores and hands out deep copies so no caller (narrate attaches news
+        to the packet in place) can leak into another's response; refresh() drops
+        it and a reload rebuilds the facade, so it never outlives the ranks it
+        mirrors. Failures (unknown cik, stale filer) propagate and are never
+        cached. Explicit ``as_of`` bypasses — a historical read is not this view."""
         from ..serve import analyze
 
-        return analyze(query, as_of=as_of or self.as_of, data=self.data,
-                       artifact=self.artifact, llm=None)
+        is_cik = isinstance(query, (int, np.integer)) or str(query).isdigit()
+        if as_of is not None or not is_cik:
+            return analyze(query, as_of=as_of or self.as_of, data=self.data,
+                           artifact=self.artifact, llm=None)
+        cik = int(query)
+        cache = self.__dict__.setdefault("_analyze_cache", {})
+        if cik in cache:
+            return copy.deepcopy(cache[cik])
+        res = analyze(cik, as_of=self.as_of, data=self.data,
+                      artifact=self.artifact, llm=None)
+        cache[cik] = copy.deepcopy(res)
+        return res
 
-    def narrate(self, packet, llm_full=None, llm_light=None) -> dict:
-        """On-demand ('n' key) narration with the local model, bringing up recalled news.
+    def narrate(self, packet, llm_full=None, llm_light=None, cache=None) -> dict:
+        """On-demand narration with the local model, tiered through the SAME
+        NarrationCache/narrate_smart machinery the nightly monitor uses.
 
-        Runs in the narrate worker thread. Attaches CURRENT news context (LIVE-VIEW;
-        excluded from any cache key) and narrates FRESH at the full tier — the user
-        asked for a current read, so this deliberately does NOT serve the monitor's
-        cached, fundamental-only narration (nor overwrite it). A dead LLM endpoint
-        degrades to the grounded template inside narrate_packet (never crashes)."""
+        Unchanged fundamentals serve the cached narration instantly (tier "cache" —
+        no 30-90s LLM wait); a minor wiggle re-narrates at the light tier; a
+        material change (new filing / big percentile move / new top drivers) gets
+        the full tier. CURRENT news context (LIVE-VIEW) is attached first so any
+        FRESH narration weaves it in — news is excluded from the durable packet
+        hash by design, so headline churn never busts the cache. A dead LLM
+        endpoint degrades to the grounded template inside narrate_packet (never
+        crashes) and narrate_smart keeps that out of the cache."""
+        from ..config import LLM_LIGHT_MODEL
+        from ..narrate.cache import NarrationCache, narrate_smart
         from ..narrate.llm import LocalLLM
-        from ..narrate.narrator import narrate_packet
         from ..narrate.packet import news_context
 
         ctx = news_context(self._news_context(int(packet["meta"]["cik"])))
         if ctx:
             packet.setdefault("context", {})["news"] = ctx
-        res = narrate_packet(packet, llm=llm_full or LocalLLM())
-        res["tier"] = ("full+news" if ctx else "full") if res.get("source") == "llm" else "template"
+        own = cache is None
+        if own:   # short-lived connection per call, like every DB touch on this facade
+            cache = NarrationCache()
+        try:
+            res = narrate_smart(packet, llm_full=llm_full or LocalLLM(),
+                                llm_light=llm_light or LocalLLM(model=LLM_LIGHT_MODEL),
+                                cache=cache)
+        finally:
+            if own:
+                cache.close()
+        if ctx and res.get("source") == "llm" and res.get("tier") in ("full", "light"):
+            res["tier"] += "+news"
         return res
 
     def ask(self, cik: int, question: str, history: list | None = None, llm=None) -> dict:

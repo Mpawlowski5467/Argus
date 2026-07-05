@@ -132,3 +132,21 @@ def test_template_tier_is_never_cached(cache):
     assert cache.get(_packet()["meta"]["cik"]) is None  # nothing cached
     r2 = narrate_smart(_packet(), cache=cache)
     assert r2["tier"] == "template"  # still template, not a cache hit
+
+
+def test_dead_endpoint_fallback_is_never_cached(cache):
+    """An llm that is passed but DOWN degrades inside narrate_packet to the
+    template fallback — that is a template run too: tier must say so and it must
+    stay out of the cache, or the next healthy run would classify 'unchanged'
+    and serve the degraded text forever."""
+    def dead(system, user):
+        raise ConnectionError("endpoint down")
+
+    r = narrate_smart(_packet(), llm_full=dead, cache=cache)
+    assert r["tier"] == "template" and r["source"] == "template-fallback"
+    assert r["grounded"]                                # degraded, never broken
+    assert cache.get(_packet()["meta"]["cik"]) is None  # the fallback never enters
+    # endpoint back up -> a real full narration runs (no false 'unchanged' hit)
+    calls = []
+    r2 = narrate_smart(_packet(), llm_full=_counting_llm("full", calls), cache=cache)
+    assert r2["tier"] == "full" and calls == ["full"]

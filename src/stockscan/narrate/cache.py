@@ -163,13 +163,17 @@ def narrate_smart(
 
     llm = llm_light if (change == "minor" and llm_light is not None) else llm_full
     result = narrate_packet(packet, llm=llm, max_retries=max_retries)
-    result["tier"] = "template" if llm is None else \
+    # tier follows the SOURCE, not the llm argument: a dead endpoint degrades inside
+    # narrate_packet to source "template-fallback", and tagging that "full" would
+    # both mislabel it and sneak it past the never-cache-template guard below
+    result["tier"] = "template" if result.get("source") != "llm" else \
         ("light" if llm is llm_light and change == "minor" else "full")
     result["materiality"] = change
     # A template run must never enter the cache: a no-LLM invocation (scheduled
-    # monitor with --no-llm, LLM endpoint down) would otherwise overwrite a cached
-    # full-tier narration AND reset the materiality baseline, after which the next
-    # LLM-enabled run can classify "unchanged" and serve the template forever.
+    # monitor with --no-llm) or a dead endpoint degrading to the template fallback
+    # would otherwise overwrite a cached full-tier narration AND reset the
+    # materiality baseline, after which the next LLM-enabled run can classify
+    # "unchanged" and serve the template forever.
     if cache is not None and result["tier"] != "template":
         # only a full-quality narration resets the materiality baseline
         cache.put(cik, packet, result, model_tag=result["tier"],
