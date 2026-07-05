@@ -559,6 +559,37 @@ class ArgusData:
         res["tier"] = ("full+news" if ctx else "full") if res.get("source") == "llm" else "template"
         return res
 
+    def ask(self, cik: int, question: str, history: list | None = None, llm=None) -> dict:
+        """Grounded chat about ONE name — the narration made interactive (web 'ask' box).
+
+        Reuses the narrate plumbing: the SAME deterministic packet plus current
+        recalled news, WIDENED with the firewalled display reads (verdict /
+        confidence / distress / drawdown / price / flags) so the chat can explain
+        every number the ticker page shows. Every numeral in the answer must trace
+        to that context or the assistant refuses (assist.core.grounded_answer) —
+        never a guess, never advice. ``history`` rides in from the browser (the
+        server stays stateless) and never expands the grounding domain."""
+        from ..assist.qa import answer_about_company
+        from ..narrate.llm import LocalLLM
+        from ..narrate.packet import news_context
+        from .chart import verdict as call_verdict
+
+        res = dict(self.ticker(cik))
+        packet = dict(res["packet"])
+        ctx = news_context(self._news_context(int(packet["meta"]["cik"])))
+        if ctx:
+            packet["context"] = {**(packet.get("context") or {}), "news": ctx}
+        res["packet"] = packet
+        pr = self.price(int(cik))
+        # a chat turn should feel conversational, not narration-length: shorter timeout
+        r = answer_about_company(
+            res, question, llm or LocalLLM(timeout=180.0), history=history,
+            price_summary=(pr or {}).get("summary"),
+            verdict=call_verdict((res.get("percentile") or 0) / 100.0))
+        m = packet.get("meta") or {}
+        return {**r, "cik": int(cik), "ticker": m.get("ticker"), "name": m.get("name"),
+                "n_news": len(ctx or [])}
+
     def watch(self) -> dict:
         from ..ops.state import OpsState
 

@@ -84,7 +84,10 @@ model call, the display-only risk flags, and your own positions never mix.
 
 **Ticker** — one name in full: the BUY/HOLD/AVOID call + a confidence chip, the price chart
 (hover for OHLCV), the exact SHAP drivers, fundamental signals, news, filings, your position,
-and a grounded local-LLM read.
+a grounded local-LLM read, and **ask** — a grounded chat that answers questions about the
+name strictly from its computed data (signals, drivers, risk reads, recalled news). Every
+numeral in a reply is checked against that data; when the answer isn't in there, it refuses
+rather than guesses. Dashed-underlined terms across the UI explain themselves on hover.
 
 ![the ticker view, with the chart hover tooltip](docs/img/ticker.png)
 

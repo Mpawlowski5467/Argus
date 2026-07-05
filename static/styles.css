@@ -314,3 +314,31 @@ button.mini.ai-go:hover { background: rgba(232, 232, 232, 0.06); }
   border: 1px solid var(--line); border-radius: 8px; padding: 0 5px; vertical-align: middle;
 }
 .tk-nav { margin-bottom: 10px; }
+
+/* -- ask (grounded chat on the company view) -------------------------------- */
+.ask-sugs { display: flex; flex-wrap: wrap; gap: 7px; margin: 8px 0 2px; }
+.ask-sug {
+  border: 1px dashed var(--line); padding: 2px 9px; font-size: 12px;
+  color: var(--dim); cursor: pointer; user-select: none;
+}
+.ask-sug:hover { color: var(--bright); border-color: var(--ink); }
+.ask-q { color: var(--bright); margin-top: 10px; }
+.ask-q::before { content: "> "; color: var(--dimmer); }
+.ask-a { margin: 4px 0 2px 2px; padding-left: 12px; border-left: 1px dashed var(--line); white-space: pre-wrap; }
+.ask-a.refused { color: var(--dim); }
+.ask-form { display: flex; gap: 8px; margin-top: 12px; }
+.ask-form input {
+  flex: 1; background: var(--panel); border: 1px dashed var(--line);
+  color: var(--bright); font: inherit; padding: 6px 10px; outline: none;
+}
+.ask-form input:focus { border-color: var(--ink); }
+.ask-form input::placeholder { color: var(--dimmer); }
+.ask-flash { font-size: 12px; margin-top: 6px; }
+
+/* -- glossary terms + the one shared tooltip -------------------------------- */
+.term { border-bottom: 1px dashed var(--dimmer); cursor: help; }
+#gloss-tip {
+  position: fixed; z-index: 90; max-width: 330px; pointer-events: none;
+  background: #0a0a0a; border: 1px dashed var(--line);
+  color: var(--dim); font-size: 12px; line-height: 1.45; padding: 8px 10px;
+}

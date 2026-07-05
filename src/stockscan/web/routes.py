@@ -14,6 +14,7 @@ the paper book, or any signal computation.
 
 from __future__ import annotations
 
+import threading
 from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import APIRouter, HTTPException
@@ -248,7 +249,13 @@ def paper():
     return convert.jsonable(_facade().paper())
 
 
-# -- narration (slow / optional LLM) + refresh -------------------------------
+# -- narration + grounded chat (slow / optional LLM) + refresh ----------------
+# One local model serves both routes and serializes anyway, so LLM work is
+# single-flight: narrate WAITS its turn (one-click, the button already shows
+# progress); ask returns {"busy": true} instead of queueing threadpool threads.
+_LLM_GATE = threading.Lock()
+
+
 @router.post("/narrate/{cik}")
 def narrate(cik: int):
     a = _facade()
@@ -256,14 +263,35 @@ def narrate(cik: int):
         res = a.ticker(cik)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
-    return convert.jsonable(_safe(lambda: a.narrate(res["packet"]), {"narrative": "", "tier": "?"}))
+    with _LLM_GATE:
+        return convert.jsonable(_safe(lambda: a.narrate(res["packet"]), {"narrative": "", "tier": "?"}))
 
 
-# TODO(ask): a per-ticker grounded "ask" route — POST /ask/{cik} {question} — reusing the
-# narrate/LLM plumbing. Deferred deliberately: it must answer ONLY from the signal packet and
-# REFUSE (never fabricate) when the packet doesn't contain the answer, staying firewalled from
-# the signal like narrate does. That grounded-answer guard is a real feature, not a thin wrapper,
-# so it is out of scope for this UX pass. Do NOT ship a raw LLM Q&A here — it would fabricate.
+@router.post("/ask/{cik}")
+def ask(cik: int, body: dict):
+    """Grounded chat about one name — the narration made interactive. Answers come
+    ONLY from the company's computed context (packet + display reads + recalled
+    news); a fabricated numeral is caught by the grounding guard and the assistant
+    REFUSES rather than guesses (assist.core.grounded_answer). Firewalled like
+    /narrate: everything is assembled AFTER scoring, nothing feeds back. History is
+    the browser's (stateless server) and never expands the grounding domain."""
+    a = _facade()
+    question = str(body.get("question") or "").strip()
+    if not question:
+        raise HTTPException(status_code=422, detail="empty question")
+    if len(question) > 2000:
+        raise HTTPException(status_code=422, detail="question too long")
+    history = [t for t in (body.get("history") or [])
+               if isinstance(t, dict) and t.get("content")][-8:]
+    if not _LLM_GATE.acquire(blocking=False):
+        return {"busy": True}
+    try:
+        try:
+            return convert.jsonable(a.ask(cik, question, history=history))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+    finally:
+        _LLM_GATE.release()
 
 
 @router.post("/refresh")
