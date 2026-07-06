@@ -59,12 +59,17 @@ INTRINIO_API_KEY = os.environ.get("STOCKSCAN_INTRINIO_KEY", "")
 LLM_BASE_URL = os.environ.get("STOCKSCAN_LLM_URL", "http://localhost:11434/v1")
 LLM_MODEL = os.environ.get("STOCKSCAN_LLM_MODEL", "gemma4:26b")
 LLM_LIGHT_MODEL = os.environ.get("STOCKSCAN_LLM_LIGHT", "phi4")
-# Interactive chat (ask / ask-book / digest brief) wants SHORT answers FAST, so it
-# gets its own knobs: an independent model choice (grounding makes a smaller model
-# safe — every numeral is checked either way) and a hard completion cap. Measured
-# on the M5 Pro: uncapped gemma4:26b wrote 2,839 tokens (~76s) to a one-line chat
-# question; capped at 500 the same turn bounds at ~15s warm. Narration stays on
-# LLM_MODEL, uncapped — its long read is the point.
+# Interactive chat (ask / ask-book / explain-move / digest brief) wants SHORT
+# answers FAST, so it gets its own knobs: an independent model choice (grounding
+# makes a smaller model safe — every numeral is checked either way) and a hard
+# completion cap. Measured on the M5 Pro: uncapped gemma4:26b wrote 2,839 tokens
+# (~76s) to a one-line chat question; capped at 500 the same turn bounds at ~4s
+# warm. Narration stays on LLM_MODEL, uncapped — its long read is the point.
+# DEFAULT = LLM_MODEL (gemma4:26b), and it STAYS there: scripts/bench_chat.py on
+# the real ask path (2026-07-05) found phi4 both slower (30s mean / 87s worst vs
+# gemma 4s / 6.9s) AND less faithful (3/5 judge-faithful, 4/9 refusals vs gemma
+# 7/8, 1/9) — the token cap already solved chat latency, so the small model is a
+# strict loss here. Set the env var only if a machine can't hold the full model.
 LLM_CHAT_MODEL = os.environ.get("STOCKSCAN_LLM_CHAT_MODEL", LLM_MODEL)
 LLM_CHAT_MAX_TOKENS = int(os.environ.get("STOCKSCAN_LLM_CHAT_MAX_TOKENS", "500"))
 LLM_CHAT_TIMEOUT = float(os.environ.get("STOCKSCAN_LLM_CHAT_TIMEOUT", "120"))

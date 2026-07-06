@@ -357,6 +357,17 @@ retrain → new artifact vintage → re-freeze). The raw data is now available s
 the migration remains a logged vintage step — a human decision — not a silent threshold
 change under the frozen baseline.
 
+**Re-baseline decision: NO-GO (2026-07-05, CLOSED).** The controlled smoke gate
+(`scripts/run_unadjusted_liquidity_rebaseline.py` — floors on raw uclose/uvolume,
+labels/features unchanged on adjusted total-return closes) came back *negative*:
+raw coverage 100.0% (17.53M rows, 11,029 columns), the raw-floor universe admits
+~+34/-10 names per date (net ~+24, mostly sub-floor names the adjusted series
+overstated), and the walk-forward OOS comparison is worse on both gates —
+IC +0.0340 vs +0.0391 (Δ −0.0051), decile spread +0.0179 vs +0.0229 (Δ −0.0050),
+t_nw 5.10 vs 5.92, 152 OOS dates. The adjusted-close floor stays production; the
+frozen 2026-07 paper baseline (artifact b50bc6d9) remains valid and its OOS accrual
+undisturbed. No Phase 3/CPCV follow-up is warranted on a negative smoke gate.
+
 ## Deferred / accepted
 
 - The FSDS quarterly publication lag makes every live month-end miss the freshest 0-3

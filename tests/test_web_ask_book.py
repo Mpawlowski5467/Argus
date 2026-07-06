@@ -121,6 +121,15 @@ def test_book_context_handles_an_empty_book():
                               "industry_concentration": [], "sector_concentration": []})
     assert ctx["holdings"] == [] and ctx["industry_concentration"] == []
     assert "nothing here is a portfolio forecast" in ctx["note"]
+    assert "concentration_note" not in ctx           # no basis -> no claim
+
+
+def test_book_context_names_the_concentration_basis():
+    held = _sc() | {"concentration_basis": "held"}
+    assert "HELD names only" in build_book_context(held)["concentration_note"]
+    watch = _sc() | {"concentration_basis": "tracked"}
+    note = build_book_context(watch)["concentration_note"]
+    assert "every tracked" in note and "not money" in note
 
 
 # -- the facade method -----------------------------------------------------------

@@ -16,10 +16,12 @@ from __future__ import annotations
 
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 
+from ..assist.move import HORIZONS
 from ..view.chart import verdict
 from ..view.treemap import squarify
 from . import convert
@@ -262,6 +264,24 @@ def paper():
 _LLM_GATE = threading.Lock()
 
 
+@contextmanager
+def _llm_single_flight():
+    """Yield True holding the LLM gate, or False when another request holds it.
+
+    One shared lock, four LLM endpoints — a hand-rolled acquire/finally per route
+    is one missed release away from deadlocking every AI surface at once, so the
+    lock discipline lives here once. Gate ONLY the model call: context assembly and
+    any code-only answer must run before/outside the ``with`` so a slow fetch or an
+    LLM-free response never holds the gate (mirrors how /narrate keeps facade work
+    outside it)."""
+    got = _LLM_GATE.acquire(blocking=False)
+    try:
+        yield got
+    finally:
+        if got:
+            _LLM_GATE.release()
+
+
 @router.post("/narrate/{cik}")
 def narrate(cik: int):
     a = _facade()
@@ -296,12 +316,10 @@ def ask_book(body: dict):
     path wins — the int-typed {cik} would 422 "book" without falling through."""
     a = _facade()
     question, history = _ask_input(body)
-    if not _LLM_GATE.acquire(blocking=False):
-        return {"busy": True}
-    try:
+    with _llm_single_flight() as got:
+        if not got:
+            return {"busy": True}
         return convert.jsonable(a.ask_book(question, history=history))
-    finally:
-        _LLM_GATE.release()
 
 
 @router.post("/ask/{cik}")
@@ -314,15 +332,35 @@ def ask(cik: int, body: dict):
     the browser's (stateless server) and never expands the grounding domain."""
     a = _facade()
     question, history = _ask_input(body)
-    if not _LLM_GATE.acquire(blocking=False):
-        return {"busy": True}
-    try:
+    with _llm_single_flight() as got:
+        if not got:
+            return {"busy": True}
         try:
             return convert.jsonable(a.ask(cik, question, history=history))
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc))
-    finally:
-        _LLM_GATE.release()
+
+
+@router.post("/explain-move/{cik}")
+def explain_move(cik: int, body: dict):
+    """Grounded "explain this move" — one trailing-change chip, one shot. The
+    context is the move plus ONLY the news/filings dated inside its window; the
+    system prompt (assist.move) bans causal claims — items COINCIDED, nothing
+    more. Context assembly (price read + windowed news + EDGAR fetch) and the
+    code-only answer for an empty window run OUTSIDE the gate, so a slow fetch
+    or an LLM-free response never blocks ask/narrate; only the model call is
+    single-flighted, returning {"busy": true} when contended."""
+    a = _facade()
+    horizon = str(body.get("horizon") or "").strip()
+    if horizon not in HORIZONS:
+        raise HTTPException(status_code=422, detail=f"unknown horizon {horizon!r}")
+    bundle, deterministic = a.move_context(cik, horizon)
+    if deterministic is not None:
+        return convert.jsonable(deterministic)
+    with _llm_single_flight() as got:
+        if not got:
+            return {"busy": True}
+        return convert.jsonable(a.move_answer(cik, horizon, bundle))
 
 
 # -- overnight digest (deterministic card; grounded LLM brief on demand) ------
@@ -339,14 +377,12 @@ def digest_brief():
     """The grounded morning brief (assist.brief) over the SAME context the card
     shows — uses only numbers in that record or refuses. Single-flight like ask."""
     a = _facade()
-    if not _LLM_GATE.acquire(blocking=False):
-        return {"busy": True}
-    try:
+    with _llm_single_flight() as got:
+        if not got:
+            return {"busy": True}
         return convert.jsonable(_safe(
             lambda: a.digest_brief(),
             {"answer": "", "grounded": True, "refused": True, "violations": []}))
-    finally:
-        _LLM_GATE.release()
 
 
 @router.post("/refresh")

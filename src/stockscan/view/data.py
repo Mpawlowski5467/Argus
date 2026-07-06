@@ -119,10 +119,21 @@ class ArgusData:
         return {"column": column, "series": series, "summary": price_summary(series, adv)}
 
     def events(self, cik: int, limit: int = 8) -> list[dict]:
-        """Recent newsworthy EDGAR filings (network; call from a worker)."""
+        """Recent newsworthy EDGAR filings (network; call from a worker).
+
+        Session-cached per (cik, limit) like news()/profile()/quote(): the ticker
+        page fetches these on open, and 'explain this move' re-reads them on every
+        chip click — one submissions download per name per session, not one per
+        click (each fetch is a fresh TLS handshake + a throttled multi-KB pull)."""
+        cache = self.__dict__.setdefault("_events_cache", {})
+        key = (int(cik), int(limit))
+        if key in cache:
+            return cache[key]
         from ..news import recent_filings
 
-        return recent_filings(int(cik), limit=limit)
+        rows = recent_filings(int(cik), limit=limit)
+        cache[key] = rows
+        return rows
 
     def ohlc(self, cik: int, tail: int = 252):
         """Adjusted OHLCV rows for a name from the per-column price store (local, no quota)."""
@@ -186,6 +197,27 @@ class ArgusData:
                 return store.context_for(int(cik))
         except Exception:
             return []
+
+    def _news_window(self, cik: int, since: str | None, limit: int = 12) -> list[dict]:
+        """News memory dated on/after ``since`` — the coincidence set for 'explain
+        this move'. Unlike ``_news_context`` (a curated 6: 3 recent + 3 notable),
+        this returns EVERY in-window article (materiality-ordered, curated for
+        dedupe/credibility, then capped) so a short horizon can't be starved by the
+        notable-PAST picks that the 6-row context spends its budget on."""
+        from ..newsmem import NewsStore
+        from ..newsmem.curate import curate
+
+        try:
+            with NewsStore() as store:
+                rows = store.recall(int(cik), since=since, limit=200)
+        except Exception:
+            return []
+        rows = [r for r in rows if r.get("takeaway")]
+        try:
+            rows = curate(rows)
+        except Exception:
+            pass
+        return rows[:limit]
 
     def live_quote(self, cik: int, refresh: bool = False) -> dict | None:
         """Latest live/intraday quote (Intrinio). Session-cached unless refresh=True."""
@@ -472,34 +504,47 @@ class ArgusData:
                         max_tokens=LLM_CHAT_MAX_TOKENS,
                         reasoning_effort=LLM_CHAT_REASONING)
 
-    def ask(self, cik: int, question: str, history: list | None = None, llm=None) -> dict:
-        """Grounded chat about ONE name — the narration made interactive (web 'ask' box).
+    def chat_context(self, cik: int) -> dict:
+        """The EXACT grounding context the ticker 'ask' hands the chat model: the
+        deterministic narration packet plus current recalled news, WIDENED with the
+        firewalled display reads (verdict / confidence / distress / drawdown /
+        price / flags) so the chat can explain every number the ticker page shows.
 
-        Reuses the narrate plumbing: the SAME deterministic packet plus current
-        recalled news, WIDENED with the firewalled display reads (verdict /
-        confidence / distress / drawdown / price / flags) so the chat can explain
-        every number the ticker page shows. Every numeral in the answer must trace
-        to that context or the assistant refuses (assist.core.grounded_answer) —
-        never a guess, never advice. ``history`` rides in from the browser (the
-        server stays stateless) and never expands the grounding domain."""
-        from ..assist.qa import answer_about_company
+        Factored out of :meth:`ask` so the chat-model benchmark
+        (scripts/bench_chat.py) measures the REAL surface by construction rather
+        than a hand-mirrored copy that silently drifts when the context is widened."""
+        from ..assist.qa import build_chat_context
         from ..narrate.packet import news_context
         from .chart import verdict as call_verdict
 
-        res = dict(self.ticker(cik))
+        res = dict(self.ticker(int(cik)))
         packet = dict(res["packet"])
-        ctx = news_context(self._news_context(int(packet["meta"]["cik"])))
-        if ctx:
-            packet["context"] = {**(packet.get("context") or {}), "news": ctx}
+        news = news_context(self._news_context(int(packet["meta"]["cik"])))
+        if news:
+            packet["context"] = {**(packet.get("context") or {}), "news": news}
         res["packet"] = packet
-        pr = self.price(int(cik))
-        r = answer_about_company(
-            res, question, llm or self._chat_llm(), history=history,
-            price_summary=(pr or {}).get("summary"),
+        pr = self.price(int(cik)) or {}
+        return build_chat_context(
+            res, price_summary=pr.get("summary"),
             verdict=call_verdict((res.get("percentile") or 0) / 100.0))
-        m = packet.get("meta") or {}
-        return {**r, "cik": int(cik), "ticker": m.get("ticker"), "name": m.get("name"),
-                "n_news": len(ctx or [])}
+
+    def ask(self, cik: int, question: str, history: list | None = None, llm=None) -> dict:
+        """Grounded chat about ONE name — the narration made interactive (web 'ask' box).
+
+        Every numeral in the answer must trace to :meth:`chat_context` or the
+        assistant refuses (assist.core.grounded_answer) — never a guess, never
+        advice. ``history`` rides in from the browser (the server stays stateless)
+        and never expands the grounding domain."""
+        from ..assist.core import grounded_answer
+        from ..assist.qa import CHAT_SYSTEM
+
+        ctx = self.chat_context(int(cik))
+        r = grounded_answer(ctx, question, llm or self._chat_llm(),
+                            CHAT_SYSTEM, history=history)
+        meta = ctx.get("meta") or {}
+        news = (ctx.get("context") or {}).get("news") or []
+        return {**r, "cik": int(cik), "ticker": meta.get("ticker"),
+                "name": meta.get("name"), "n_news": len(news)}
 
     def ask_book(self, question: str, history: list | None = None, llm=None) -> dict:
         """Grounded chat about the BOOK — the scorecard made interactive (web ask box).
@@ -516,6 +561,60 @@ class ArgusData:
         r = answer_about_book(sc, question, llm or self._chat_llm(),
                               history=history)
         return {**r, "n_names": sc.get("n_total", 0), "as_of": sc.get("as_of")}
+
+    def move_context(self, cik: int, horizon: str) -> tuple[dict, dict | None]:
+        """Assemble the grounded "explain this move" context and try the code-only
+        answer — ALL of it (price read, windowed news, EDGAR filings) with NO LLM
+        gate held. Returns ``(bundle, deterministic)``: ``bundle`` carries the ctx
+        + display fields the answer step needs; ``deterministic`` is a FINAL result
+        when no model is needed (unmeasurable move / empty window), else None.
+
+        The split lets the web route gate only the model call, so a code-only
+        answer never queues behind a narration and a slow EDGAR fetch never holds
+        the single-flight gate. Firewalled/display-only like ask/narrate; works off
+        the price matrices + universe directly, so an unscored name with price
+        history still gets an honest read."""
+        from ..assist.move import (HORIZONS, build_move_context,
+                                    deterministic_answer, window_cutoff)
+        from ..narrate.packet import news_context
+
+        if horizon not in HORIZONS:
+            raise ValueError(f"unknown horizon {horizon!r}")
+        pr = self.price(int(cik)) or {}
+        summary = pr.get("summary") or {}
+        series = pr.get("series")
+        as_of = str(series.index[-1].date()) if series is not None and len(series) else None
+        row = self._cross[self._cross["cik"] == int(cik)]
+        meta = ({"ticker": str(row.iloc[0].get("ticker") or "—"),
+                 "name": str(row.iloc[0].get("name") or "")}
+                if not row.empty else
+                {"ticker": self._pick(cik, "ticker") or "—",
+                 "name": self._pick(cik, "name") or ""})
+        ctx = build_move_context(
+            meta, horizon, summary, as_of,
+            news=news_context(self._news_window(int(cik), window_cutoff(horizon, as_of))),
+            filings=self.events(int(cik)))
+        bundle = {"ctx": ctx, "ticker": meta["ticker"]}
+        det = deterministic_answer(ctx)
+        if det is not None:
+            det = {**det, "cik": int(cik), "horizon": horizon, "ticker": meta["ticker"]}
+        return bundle, det
+
+    def move_answer(self, cik: int, horizon: str, bundle: dict, llm=None) -> dict:
+        """The LLM half of "explain this move" — call ONLY under the single-flight
+        gate, and only when :meth:`move_context` returned no deterministic answer."""
+        from ..assist.move import answer_from_context
+
+        r = answer_from_context(bundle["ctx"], llm or self._chat_llm())
+        return {**r, "cik": int(cik), "horizon": horizon, "ticker": bundle["ticker"]}
+
+    def explain_move(self, cik: int, horizon: str, llm=None) -> dict:
+        """The whole "explain this move" turn (context + answer) in one call —
+        convenience for direct callers/tests. The WEB route splits it across the
+        gate via :meth:`move_context` / :meth:`move_answer` so context work and
+        code-only answers never hold the LLM gate."""
+        bundle, det = self.move_context(cik, horizon)
+        return det if det is not None else self.move_answer(cik, horizon, bundle, llm=llm)
 
     def digest(self) -> dict:
         """Overnight ops record (jobs, unseen alerts, paper status) — deterministic.

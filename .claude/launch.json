@@ -17,7 +17,7 @@
         "8137"
       ],
       "port": 8137,
-      "autoPort": false
+      "autoPort": true
     }
   ]
 }

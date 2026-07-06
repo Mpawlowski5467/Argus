@@ -195,6 +195,18 @@ def test_scorecard_concentration_uses_count_when_no_value():
     assert sc["sector_concentration"][0]["name"] == "Tech"      # 2 names > 1
 
 
+def test_scorecard_concentration_basis_is_citable():
+    # anything held in the universe -> the split covers held names only
+    assert scorecard(_positions(), _cross(), _PRICES)["concentration_basis"] == "held"
+    # pure watchlist -> falls back to every tracked name, and says so
+    watch = [{"cik": 1, "shares": None, "cost_basis": None, "added_at": "x"},
+             {"cik": 3, "shares": None, "cost_basis": None, "added_at": "x"}]
+    assert scorecard(watch, _cross(), _PRICES)["concentration_basis"] == "tracked"
+    # nothing in the universe at all -> no basis to claim
+    only_unlisted = [{"cik": 9, "shares": 5, "cost_basis": 50.0, "added_at": "x"}]
+    assert scorecard(only_unlisted, _cross(), _PRICES)["concentration_basis"] is None
+
+
 def test_scorecard_empty_book_is_all_zeros_not_a_crash():
     sc = scorecard([], _cross())
     assert sc["n_total"] == 0 and sc["n_owned"] == 0 and sc["holdings"] == []
