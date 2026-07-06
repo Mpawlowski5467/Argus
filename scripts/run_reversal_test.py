@@ -103,7 +103,7 @@ def main(argv=None) -> int:
     # dollar_volume=dv is REQUIRED for amihud (it divides |ret| by dollar volume).
     panel = build_fundamental_panel(
         feats, close, delistings=delistings, dollar_volume=dv, ticker_map=tmap,
-        min_dollar_volume=MIN_DOLLAR_VOLUME, winsorize=WINSOR, price_features=True,
+        min_dollar_volume=MIN_DOLLAR_VOLUME, winsorize=WINSOR, price_features=NEW_FEATURES,
     )
     if panel.empty:
         print("empty panel")
