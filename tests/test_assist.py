@@ -3,6 +3,7 @@
 import json
 
 from stockscan.assist.audit import firewall_review_diff, firewall_scan
+from stockscan.assist.book import answer_about_book
 from stockscan.assist.brief import build_brief_context, nightly_brief
 from stockscan.assist.core import REFUSAL, grounded_answer
 from stockscan.assist.judge import judge_narration
@@ -38,6 +39,49 @@ def test_grounded_answer_degrades_on_llm_error():
         raise TimeoutError("down")
     r = grounded_answer(_PACKET, "q", llm, "SYS")
     assert r["refused"] and any(str(v).startswith("llm-error") for v in r["violations"])
+
+
+# --- the shared date rule reaches EVERY grounded surface -------------------------
+# Regression: a model that reworded the context's ISO dates leaked a bare day-number
+# and got spuriously refused. core.grounded_answer now appends one ISO-date rule to
+# whatever system prompt it is handed, so no single surface can forget it.
+
+def test_grounded_answer_appends_the_iso_date_rule_to_the_system_prompt():
+    seen = {}
+
+    def llm(system, user):
+        seen["system"] = system
+        return "Return on assets 19.8%."
+    grounded_answer(_PACKET, "q", llm, "MY SYSTEM PROMPT")
+    assert "MY SYSTEM PROMPT" in seen["system"]                 # caller's prompt kept
+    assert "YYYY-MM-DD" in seen["system"]                       # rule appended
+    assert "reworded date" in seen["system"]
+
+
+def test_date_rule_reaches_qa_book_and_brief_surfaces():
+    seen = {}
+
+    def llm(system, user):
+        seen["system"] = system
+        return "nothing of note."
+    answer_from_packet(_PACKET, "q", llm)
+    assert "YYYY-MM-DD" in seen["system"]
+    answer_about_book({"n_total": 0}, "q", llm)
+    assert "YYYY-MM-DD" in seen["system"]
+    nightly_brief(build_brief_context(_FakeState()), llm)
+    assert "YYYY-MM-DD" in seen["system"]
+
+
+def test_reworded_iso_date_now_grounds_instead_of_refusing():
+    """End-to-end: the packet carries an ISO date; a model that reformats it to a
+    natural-language or slash form is accepted (the guard tolerates the safe forms),
+    not retried into a refusal."""
+    packet = {"meta": {"as_of": "2026-07-01", "cik": 1}, "model": {"percentile": 73}}
+
+    def reformats(system, user):
+        return "As of July 1st, 2026 it ranks in the 73rd percentile."
+    r = grounded_answer(packet, "when and where?", reformats, "SYS")
+    assert r["grounded"] and not r["refused"] and r["attempts"] == 1
 
 
 # --- A: qa -----------------------------------------------------------------------

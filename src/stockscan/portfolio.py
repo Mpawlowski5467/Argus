@@ -223,9 +223,12 @@ def scorecard(
 
     # concentration reflects your actual money: HELD names in the universe. With
     # nothing held yet, fall back to all tracked names (count-weighted) so a pure
-    # watchlist still shows what you follow.
+    # watchlist still shows what you follow. The basis is shipped so the display and
+    # the book chat can say WHICH set the split covers instead of implying the whole
+    # book.
     held_listed = [h for h in owned if h["in_universe"]]
     conc_set = held_listed if held_listed else listed
+    conc_basis = "held" if held_listed else ("tracked" if listed else None)
 
     # display-only risk exposure — counts by flag, plus book value sitting in each flag
     distress = _risk_exposure(listed, "dflag")
@@ -247,6 +250,7 @@ def scorecard(
         "percentile_value": pct_value,
         "distress": distress,
         "drawdown": drawdown,
+        "concentration_basis": conc_basis,
         "industry_concentration": _concentration(conc_set, "industry"),
         "sector_concentration": _concentration(conc_set, "sector"),
         "holdings": holdings,

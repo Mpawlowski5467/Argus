@@ -15,6 +15,25 @@
   function plMoney(x) { if (x == null || !isFinite(x)) return "—"; return (x >= 0 ? "+" : "−") + money(Math.abs(x)); }
   function pctColor(x) { return x == null ? "muted" : x >= 0 ? "pos" : "neg"; }
   function sign(x, d) { if (x == null || !isFinite(x)) return "—"; return (x >= 0 ? "+" : "") + x.toFixed(d == null ? 1 : d) + "%"; }
+  // Every LLM endpoint (ask, ask/book, explain-move, digest brief) returns the same
+  // {answer, busy, refused, violations} shape; decode it in ONE place so the busy /
+  // offline / timeout / refused classification can't drift between surfaces.
+  function llmVerdict(d) {
+    if (d && d.busy) return { busy: true };
+    if (!d || d.answer == null) return { offline: true };
+    var errs = (d.violations || []).map(String).filter(function (v) { return v.indexOf("llm-error") === 0; });
+    if (errs.length) return { offline: true, timeout: errs.join(",").indexOf("Timeout") >= 0 };
+    return { answer: d.answer, refused: !!d.refused };
+  }
+  // One wording for the offline states — and ONE place for the env-var name, so a
+  // chat surface never tells the user to set the wrong variable (chat reads
+  // STOCKSCAN_LLM_CHAT_MODEL, per config.py).
+  function llmOffline(timeout) {
+    return timeout
+      ? "the local model timed out — it answered too slowly. Try again, or point STOCKSCAN_LLM_CHAT_MODEL at a smaller model for chat."
+      : "the local model is unreachable — start Ollama (or set STOCKSCAN_LLM_URL), then ask again.";
+  }
+  var LLM_BUSY = "the local model is busy with another request — try again in a moment";
   function fmtCap(x) {
     if (x == null) return "…";
     if (x >= 1e12) return "$" + (x / 1e12).toFixed(2) + "T";
@@ -221,9 +240,7 @@
       o.chat.forEach(function (turn) {
         h += '<div class="ask-q">' + esc(turn.q) + "</div>";
         if (turn.offline) {
-          h += turn.timeout
-            ? '<div class="ask-a"><span class="warn">the local model timed out — it answered too slowly. Try again, or point STOCKSCAN_LLM_MODEL at a smaller model for chat.</span></div>'
-            : '<div class="ask-a"><span class="warn">the local model is unreachable — start Ollama (or set STOCKSCAN_LLM_URL), then ask again.</span></div>';
+          h += '<div class="ask-a"><span class="warn">' + esc(llmOffline(turn.timeout)) + "</span></div>";
         } else {
           h += '<div class="ask-a' + (turn.refused ? " refused" : "") + '">' + esc(turn.a) +
             (turn.refused ? ' <span class="warn">' + esc(o.refusedTag) + "</span>" : "") + "</div>";
@@ -275,11 +292,9 @@
         o.repaint();
       };
       apiPost(o.url(), { question: q, history: history.slice(-8) }).then(function (d) {
-        if (d && d.busy) { done(null, "the local model is busy with another request — try again in a moment"); return; }
-        if (!d || d.answer == null) { done({ q: q, offline: true }); return; }
-        var errs = (d.violations || []).map(String).filter(function (v) { return v.indexOf("llm-error") === 0; });
-        done({ q: q, a: d.answer, refused: !!d.refused && !errs.length,
-               offline: !!errs.length, timeout: errs.join(",").indexOf("Timeout") >= 0 });
+        var v = llmVerdict(d);
+        if (v.busy) { done(null, LLM_BUSY); return; }
+        done({ q: q, a: v.answer, refused: !!v.refused, offline: !!v.offline, timeout: !!v.timeout });
       }).catch(function () { done({ q: q, offline: true }); });
     };
     return o;
@@ -458,12 +473,19 @@
       if (pr && pr.summary && pr.points && pr.points.length > 1) {
         var s = pr.summary;
         var adv = s.adv ? " · " + term("adv", "ADV $" + (s.adv / 1e6).toFixed(1) + "M") : "";
+        // each change chip is clickable → grounded "explain this move" (what
+        // coincided in news/filings — never a cause, never a forecast)
+        var chip = function (k, v) {
+          var inner = k + ' <span class="' + pctColor(v) + '">' + sign(v) + "</span>";
+          if (v == null) return "<span>" + inner + "</span>";
+          return '<span class="mvchip" data-h="' + k + '" title="explain this move — what coincided with it (grounded; not a cause, not a forecast)">' + inner + "</span>";
+        };
+        // chip keys mirror the shared horizon table (src/stockscan/horizons.py);
+        // keep this set/order in sync — tests/test_horizons.py pins it.
         h += '<div class="price-line"><span class="last"><b>' + Number(s.last).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + "</b></span>" +
-          '<span>1w <span class="' + pctColor(s.chg_1w) + '">' + sign(s.chg_1w) + "</span></span>" +
-          '<span>1m <span class="' + pctColor(s.chg_1m) + '">' + sign(s.chg_1m) + "</span></span>" +
-          '<span>3m <span class="' + pctColor(s.chg_3m) + '">' + sign(s.chg_3m) + "</span></span>" +
-          '<span>1y <span class="' + pctColor(s.chg_1y) + '">' + sign(s.chg_1y) + "</span></span>" +
+          chip("1w", s.chg_1w) + chip("1m", s.chg_1m) + chip("3m", s.chg_3m) + chip("1y", s.chg_1y) +
           '<span class="muted">close · 52wk ' + Math.round(s.lo_52w) + "–" + Math.round(s.hi_52w) + adv + "</span></div>";
+        h += Ticker.explainBlock(t);
       } else if (pr) {
         h += '<div class="muted">— no price history —</div>';
       }
@@ -480,6 +502,44 @@
         '<button class="mini" id="btn-live">&#8635; quote</button>' +
         '<button class="mini' + (state.auto ? " on" : "") + '" id="btn-auto">auto ' + (state.auto ? "●" : "○") + "</button></div>";
       return h;
+    },
+    // -- explain this move: one chip, one grounded shot (assist.move) ------------
+    // State lives on state.tk.explain (never the DOM) so async re-renders can't
+    // lose it; a fresh ticker gets a fresh state.tk. The server single-flights the
+    // LLM and answers an empty window deterministically (no model wait).
+    explainBlock: function (t) {
+      var ex = t.explain;
+      if (!ex) return "";
+      var h = '<div class="mv-explain">';
+      if (ex.busy) {
+        h += '<div class="ask-a muted">explaining the ' + esc(ex.horizon) + " move … (local model)</div>";
+      } else if (ex.offline) {
+        h += '<div class="ask-a"><span class="warn">' + esc(llmOffline(ex.timeout)) + "</span></div>";
+      } else if (ex.note) {
+        h += '<div class="ask-flash warn">' + esc(ex.note) + "</div>";
+      } else if (ex.answer != null) {
+        h += '<div class="ask-a' + (ex.refused ? " refused" : "") + '"><b>' + esc(ex.horizon) + " move</b> · " + esc(ex.answer) +
+          (ex.refused ? ' <span class="warn">[refused — not in this name’s data]</span>' : "") + "</div>" +
+          '<div class="ai-note">reported items that coincided with the move — coincidence isn’t cause, and none of this is a forecast</div>';
+      }
+      return h + "</div>";
+    },
+    explainMove: function (hz) {
+      var t = state.tk;
+      if (!t || !state.cik || (t.explain && t.explain.busy)) return;
+      var cik = state.cik;
+      t.explain = { busy: true, horizon: hz };
+      Ticker.render();
+      var done = function (ex) {
+        if (state.cik !== cik || !state.tk) return;   // user moved on — don't clobber
+        state.tk.explain = ex;
+        Ticker.render();
+      };
+      apiPost("/explain-move/" + cik, { horizon: hz }).then(function (d) {
+        var v = llmVerdict(d);
+        if (v.busy) { done({ horizon: hz, note: LLM_BUSY }); return; }
+        done({ horizon: hz, answer: v.answer, offline: !!v.offline, timeout: !!v.timeout, refused: !!v.refused });
+      }).catch(function () { done({ horizon: hz, offline: true }); });
     },
     // -- your position: personal holdings (live-view display only; never the signal) --
     positionBlock: function (t) {
@@ -643,6 +703,9 @@
       var prm = el("btn-pos-remove"); if (prm) prm.onclick = Ticker.removePosition;
       var psh = el("pos-shares"); if (psh) psh.oninput = Ticker.onPosInput;
       var pco = el("pos-cost"); if (pco) pco.oninput = Ticker.onPosInput;
+      Array.prototype.forEach.call(el(state.detailTarget).querySelectorAll(".mvchip"), function (c) {
+        c.addEventListener("click", function () { Ticker.explainMove(c.dataset.h); });
+      });
       tickerChat.wire();
       Ticker.updatePL();
     },
@@ -819,7 +882,7 @@
       Watch.paint();                     // repaint with the busy button
       apiPost("/digest").then(function (d) {
         state.digesting = false;
-        if (d && d.busy) Watch.brief = { answer: "the local model is busy with another request — try again in a moment" };
+        if (d && d.busy) Watch.brief = { answer: LLM_BUSY };
         else Watch.brief = d || null;
         Watch.paint();
       }).catch(function () { state.digesting = false; Watch.paint(); });
@@ -882,10 +945,11 @@
       return '<div class="sc-stat"><div class="sc-big">' + big + '</div><div class="sc-lab">' + esc(label) + "</div></div>";
     },
     pctCell: function (p) { return p == null ? '<span class="muted">—</span>' : Math.round(p) + '<span class="muted">th</span>'; },
-    concentration: function (title, buckets) {
+    concentration: function (title, buckets, basis) {
       if (!buckets || !buckets.length) return "";
       var byValue = buckets.some(function (b) { return b.weight_value != null; });
-      var h = ['<div class="section-h">' + esc(title) + " · by " + (byValue ? "position value" : "holding count") + "</div><div class=\"sc-conc\">"];
+      var scope = basis === "held" ? "held names" : basis === "tracked" ? "all tracked names" : null;
+      var h = ['<div class="section-h">' + esc(title) + " · by " + (byValue ? "position value" : "holding count") + (scope ? " · " + scope : "") + "</div><div class=\"sc-conc\">"];
       buckets.slice(0, 8).forEach(function (b) {
         var w = byValue ? (b.weight_value || 0) : (b.weight_count || 0);
         h.push('<div class="sc-crow"><span class="sc-cname">' + esc(b.name) + "</span>" +
@@ -954,7 +1018,7 @@
       h.push(Scorecard.riskBlock("large-drawdown exposure", sc.drawdown, "learned P(≥30% peak-to-trough drawdown within ~6mo)"));
 
       // concentration — value-weighted bars (falls back to count when unpriced)
-      h.push(Scorecard.concentration("industry concentration", sc.industry_concentration));
+      h.push(Scorecard.concentration("industry concentration", sc.industry_concentration, sc.concentration_basis));
 
       // the full tracked-names table (never hidden) — held names first, then watched
       h.push('<div class="section-h">names · ' + sc.n_owned + " held, " + sc.n_watch + " watched</div>");

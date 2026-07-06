@@ -110,6 +110,17 @@ def build_book_context(sc: dict) -> dict:
                     row[dst] = _jsround(row[src] * 100)
             buckets.append(row)
         ctx[key] = buckets
+    # the split's basis is citable so the chat never implies a wider set than it covers:
+    # held-only when anything is held; the whole watchlist only as the no-shares fallback
+    basis = sc.get("concentration_basis")
+    if basis == "held":
+        ctx["concentration_note"] = (
+            "the industry/sector split covers the HELD names only — where money "
+            "actually sits; watch-only names are not part of this split")
+    elif basis == "tracked":
+        ctx["concentration_note"] = (
+            "nothing is held yet, so the industry/sector split covers every tracked "
+            "(watchlist) name by count — it describes what the user follows, not money")
     return ctx
 
 

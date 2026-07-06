@@ -60,6 +60,13 @@ SYSTEM = (
     "\"direction\": \"reported\"}. News takeaways are deliberately number-free: do NOT "
     "attach or invent any figure to a news theme — for numbers, use the fundamentals "
     "packet or speak qualitatively.\n"
+    # Same date-reformat guard the assist surfaces get via core.grounded_answer's
+    # _DATE_RULE — narration runs its own loop (not grounded_answer), so it carries
+    # the rule inline: a reworded date leaks a bare day-number to the SAME grounding
+    # check and spuriously falls back to the template.
+    "- Write every date EXACTLY as it appears in the packet (ISO YYYY-MM-DD). Never "
+    "reformat, shorten, spell out, or re-order a date — a reworded date reads as an "
+    "invented number to the grounding check and your narration will be discarded.\n"
     "- No buy/sell advice, price targets, or predictions. Analysis only."
 )
 

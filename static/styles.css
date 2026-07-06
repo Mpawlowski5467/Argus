@@ -335,6 +335,11 @@ button.mini.ai-go:hover { background: rgba(232, 232, 232, 0.06); }
 .ask-form input::placeholder { color: var(--dimmer); }
 .ask-flash { font-size: 12px; margin-top: 6px; }
 
+/* -- explain this move: clickable change chips + the one-shot answer -------- */
+.mvchip { border-bottom: 1px dashed var(--dimmer); cursor: pointer; user-select: none; }
+.mvchip:hover { border-bottom-color: var(--ink); color: var(--bright); }
+.mv-explain { margin: 6px 0 2px; }
+
 /* -- glossary terms + the one shared tooltip -------------------------------- */
 .term { border-bottom: 1px dashed var(--dimmer); cursor: help; }
 #gloss-tip {

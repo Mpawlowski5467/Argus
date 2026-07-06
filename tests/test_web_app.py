@@ -69,6 +69,44 @@ def test_new_endpoints_are_wired(client, monkeypatch):
     assert client.get("/api/digest").json()["n_unseen_alerts"] == 0
 
 
+def test_explain_move_route_validates_then_delegates(client, monkeypatch):
+    class _Facade:
+        def move_context(self, cik, horizon):
+            # deterministic (code-only) answer: no gate, no model
+            return {"ctx": {}, "ticker": "AAA"}, {
+                "answer": "nothing coincided", "refused": False,
+                "deterministic": True, "cik": cik, "horizon": horizon}
+
+        def move_answer(self, cik, horizon, bundle, llm=None):
+            raise AssertionError("deterministic path must not call the model")
+
+    monkeypatch.setattr(STATE, "status", "ready")
+    monkeypatch.setattr(STATE, "adata", _Facade())
+    r = client.post("/api/explain-move/7", json={"horizon": "6m"})
+    assert r.status_code == 422                       # unknown chip never hits the facade
+    r = client.post("/api/explain-move/7", json={"horizon": "1m"})
+    assert r.status_code == 200 and r.json()["horizon"] == "1m"
+
+
+def test_explain_move_route_gates_only_the_model_call(client, monkeypatch):
+    """When move_context has no deterministic answer, the route runs move_answer
+    under the single-flight gate — context assembly already happened gate-free."""
+    class _Facade:
+        def move_context(self, cik, horizon):
+            return {"ctx": {"x": 1}, "ticker": "AAA"}, None      # needs the model
+
+        def move_answer(self, cik, horizon, bundle, llm=None):
+            return {"answer": "reuters.com reported a guidance cut that coincided",
+                    "refused": False, "deterministic": False, "cik": cik,
+                    "horizon": horizon, "ticker": bundle["ticker"]}
+
+    monkeypatch.setattr(STATE, "status", "ready")
+    monkeypatch.setattr(STATE, "adata", _Facade())
+    r = client.post("/api/explain-move/7", json={"horizon": "1m"})
+    assert r.status_code == 200 and r.json()["deterministic"] is False
+    assert "coincided" in r.json()["answer"]
+
+
 def test_static_index_served_at_root(client):
     r = client.get("/")
     assert r.status_code == 200
