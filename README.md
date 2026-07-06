@@ -78,7 +78,8 @@ A local browser UI over the same serve/ops layer — `uv run python scripts/argu
 then open <http://127.0.0.1:8000>. Everything it shows is deterministic and firewalled: the
 model call, the display-only risk flags, and your own positions never mix.
 
-**Scan** — the ranked universe; click any name to drill in.
+**Scan** — the ranked universe; click any name to drill in, or star ☆ it onto the
+watchlist without leaving the list.
 
 ![the scan view](docs/img/scan.png)
 
@@ -143,8 +144,9 @@ uv run python scripts/scan.py
 # the argus web UI (needs the [web] extra) — then open http://127.0.0.1:8000
 uv run python scripts/argus_web.py
 
-# unattended operation: one nightly dispatcher (ingest → monitor → paper-forward)
-uv run python scripts/ops.py nightly       # or: health | monitor | paper | prices | fsds | universe
+# unattended operation: one nightly dispatcher (ingest → monitor → paper-forward →
+# store backups); alerts are position-aware and cover paper-forward grading progress
+uv run python scripts/ops.py nightly       # or: health | backup | monitor | paper | prices | fsds | universe
 uv run python scripts/ops.py install-launchd   # schedule it (macOS, daily 22:45)
 ```
 

@@ -50,9 +50,11 @@ DEFAULT_HORIZON_MONTHS = 6      # forward window over which a deep drawdown coun
 DEFAULT_THRESHOLD = -0.30       # peak-to-trough fall that counts as a "large" drawdown
 
 # Display/alert flag levels for the FIREWALLED risk-flag layer (never a trade input).
-# Placeholders pending calibration on the realized base rate — a 6-month 30% drawdown is
-# far more common than a distress delisting, so these are tuned once the panel is built.
-DRAWDOWN_FLAG_THRESHOLDS = (("high", 0.60), ("elevated", 0.40))
+# Calibrated on the frozen 6mo/-30% artifact: the full-panel base rate is ~39.5%; P>=0.55
+# captures names with ~1.8x baseline drawdown incidence, and P>=0.70 is the top-tail
+# (~2x baseline) bucket. A 30% drawdown is common enough that distress-style low
+# thresholds would over-warn the book.
+DRAWDOWN_FLAG_THRESHOLDS = (("high", 0.70), ("elevated", 0.55))
 
 
 # --- label: forward peak-to-trough drawdown -------------------------------------

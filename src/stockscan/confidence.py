@@ -89,6 +89,24 @@ def _coherence_factor(drivers) -> float:
     return 0.80 + 0.20 * _coherence(drivers)
 
 
+def _downside_risk_factor(downside: dict | None) -> float:
+    """Display-only risk heads can only LOWER confidence, never raise it.
+
+    The return score stays untouched; this is just the trust-read saying "even when the
+    return bucket has an edge, a separately-learned high drawdown probability makes the
+    call less dependable." Absent/normal drawdown risk is neutral.
+    """
+    if not downside:
+        return 1.0
+    drawdown = downside.get("drawdown") or {}
+    flag = drawdown.get("flag")
+    if flag == "high":
+        return 0.75
+    if flag == "elevated":
+        return 0.90
+    return 1.0
+
+
 # --- calibration artifact I/O ---------------------------------------------------
 
 def load_calibration(path: Path = CALIBRATION_PATH) -> dict:
@@ -119,6 +137,7 @@ def score_confidence(
     drivers,
     flags: dict | None,
     calibration: dict | None,
+    downside: dict | None = None,
 ) -> dict | None:
     """Derive a 0-100 confidence for one name's call. ``None`` when it cannot be grounded.
 
@@ -151,8 +170,9 @@ def score_confidence(
     margin = _margin_factor(percentile)
     data_quality = _data_quality_factor(flags)
     coherence = _coherence_factor(drivers)
+    downside_risk = _downside_risk_factor(downside)
 
-    raw = 100.0 * conviction_base * margin * data_quality * coherence
+    raw = 100.0 * conviction_base * margin * data_quality * coherence * downside_risk
     score = int(round(min(raw, float(CEILING))))
 
     return {
@@ -167,5 +187,6 @@ def score_confidence(
             "margin": round(margin, 4),
             "data_quality": round(data_quality, 4),
             "coherence": round(coherence, 4),
+            "downside_risk": round(downside_risk, 4),
         },
     }

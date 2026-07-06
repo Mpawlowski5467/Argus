@@ -44,6 +44,7 @@ def _cross():
         "sector": ["Tech", "Fin"], "sic": [3674, 6021],
         "score": [0.9, 0.1], "pct": [0.90, 0.30],
         "dprob": [np.nan, 0.05], "dflag": ["normal", "elevated"],
+        "wprob": [0.20, 0.72], "wflag": ["normal", "high"],
     })
 
 
@@ -62,6 +63,7 @@ def test_facade_scorecard_prices_from_last_close_and_delegates(monkeypatch):
     assert by[1]["value"] == 2000.0 and by[2]["value"] == 1500.0
     assert sc["total_value"] == 3500.0
     assert sc["percentile_equal"] == 60.0                      # mean(90,30)
+    assert sc["drawdown"]["known"] is True and sc["drawdown"]["count"]["high"] == 1
 
 
 def test_facade_scorecard_merges_watchlist_only_names(monkeypatch):

@@ -22,6 +22,8 @@ def _cross():
         "pct":    [0.90, 0.30, 0.60],
         "dprob":  [np.nan, 0.05, 0.12],
         "dflag":  ["normal", "elevated", "high"],
+        "wprob":  [0.20, 0.58, 0.72],
+        "wflag":  ["normal", "elevated", "high"],
     })
 
 
@@ -68,6 +70,13 @@ def test_join_reads_distress_prob_when_present():
     rows = {h["cik"]: h for h in holdings_join(_positions(), _cross(), _PRICES)}
     assert rows[2]["dflag"] == "elevated" and rows[2]["dprob"] == 0.05
     assert rows[3]["dflag"] == "high" and rows[3]["dprob"] == 0.12
+
+
+def test_join_reads_drawdown_prob_when_present():
+    rows = {h["cik"]: h for h in holdings_join(_positions(), _cross(), _PRICES)}
+    assert rows[1]["wflag"] == "normal" and rows[1]["wprob"] == 0.20
+    assert rows[2]["wflag"] == "elevated" and rows[2]["wprob"] == 0.58
+    assert rows[3]["wflag"] == "high" and rows[3]["wprob"] == 0.72
 
 
 def test_join_watchlist_only_name_has_standing_but_no_value():
@@ -133,11 +142,27 @@ def test_scorecard_distress_exposure_counts_and_at_risk():
     assert d["value"]["high"] == 1000.0 and d["value"]["elevated"] == 1500.0
 
 
+def test_scorecard_drawdown_exposure_counts_and_at_risk():
+    sc = scorecard(_positions(), _cross(), _PRICES)
+    w = sc["drawdown"]
+    assert w["known"] is True
+    assert w["count"] == {"high": 1, "elevated": 1, "normal": 1}
+    assert w["at_risk"] == 2
+    assert w["value"]["high"] == 1000.0 and w["value"]["elevated"] == 1500.0
+
+
 def test_scorecard_distress_unknown_when_no_flag_column():
     cross = _cross().drop(columns=["dprob", "dflag"])
     sc = scorecard(_positions(), cross, _PRICES)
     assert sc["distress"]["known"] is False
     assert sc["distress"]["at_risk"] == 0 and sc["distress"]["value"] is None
+
+
+def test_scorecard_drawdown_unknown_when_no_flag_column():
+    cross = _cross().drop(columns=["wprob", "wflag"])
+    sc = scorecard(_positions(), cross, _PRICES)
+    assert sc["drawdown"]["known"] is False
+    assert sc["drawdown"]["at_risk"] == 0 and sc["drawdown"]["value"] is None
 
 
 def test_scorecard_concentration_is_value_weighted_and_biggest_first():
@@ -176,4 +201,5 @@ def test_scorecard_empty_book_is_all_zeros_not_a_crash():
     assert sc["percentile_equal"] is None and sc["percentile_value"] is None
     assert sc["total_value"] is None
     assert sc["distress"]["known"] is False and sc["distress"]["at_risk"] == 0
+    assert sc["drawdown"]["known"] is False and sc["drawdown"]["at_risk"] == 0
     assert sc["industry_concentration"] == [] and sc["sector_concentration"] == []

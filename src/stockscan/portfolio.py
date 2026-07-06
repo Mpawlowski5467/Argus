@@ -53,7 +53,8 @@ def holdings_join(
                      it still gets model standing, just no value / P&L. ``owned`` marks
                      the ones with shares.
     ``cross``      : the scored cross-section (``cik, ticker, name, sector, sic, pct``;
-                     ``dprob``/``dflag`` present only when the distress artifact is loaded).
+                     ``dprob``/``dflag`` present only when the distress artifact is loaded;
+                     ``wprob``/``wflag`` present only when the drawdown artifact is loaded).
     ``prices``     : optional ``{cik: latest_price}`` for value & P/L (live-view close).
 
     A name absent from the cross is returned with ``in_universe=False`` and
@@ -90,6 +91,9 @@ def holdings_join(
             dflag = r.get("dflag") if "dflag" in cross.columns else None
             dprob = (float(r["dprob"]) if "dprob" in cross.columns
                      and pd.notna(r.get("dprob")) else None)
+            wflag = r.get("wflag") if "wflag" in cross.columns else None
+            wprob = (float(r["wprob"]) if "wprob" in cross.columns
+                     and pd.notna(r.get("wprob")) else None)
             row.update({
                 "in_universe": True,
                 "status": "listed",
@@ -101,6 +105,8 @@ def holdings_join(
                 "decile": _decile(pct01),
                 "dflag": dflag,
                 "dprob": dprob,
+                "wflag": wflag,
+                "wprob": wprob,
             })
         else:
             row.update({
@@ -114,9 +120,32 @@ def holdings_join(
                 "decile": None,
                 "dflag": None,
                 "dprob": None,
+                "wflag": None,
+                "wprob": None,
             })
         rows.append(row)
     return rows
+
+
+def _risk_exposure(listed: list[dict], flag_key: str) -> dict:
+    """Counts + book value by display-risk flag for a firewalled optional head."""
+    flags = ("high", "elevated", "normal")
+    count = {f: 0 for f in flags}
+    value = {f: 0.0 for f in flags}
+    known = False
+    for h in listed:
+        f = h.get(flag_key)
+        if f in count:
+            known = True
+            count[f] += 1
+            if h["value"] is not None:
+                value[f] += h["value"]
+    return {
+        "known": known,
+        "count": count,
+        "value": value if known else None,
+        "at_risk": count["high"] + count["elevated"],
+    }
 
 
 def _weighted_mean(pairs: list[tuple[float, float]]) -> float | None:
@@ -198,18 +227,9 @@ def scorecard(
     held_listed = [h for h in owned if h["in_universe"]]
     conc_set = held_listed if held_listed else listed
 
-    # distress exposure — counts by flag, plus the book value sitting in each flag
-    flags = ("high", "elevated", "normal")
-    distress_count = {f: 0 for f in flags}
-    distress_value = {f: 0.0 for f in flags}
-    distress_known = False
-    for h in listed:
-        f = h["dflag"]
-        if f in distress_count:
-            distress_known = True
-            distress_count[f] += 1
-            if h["value"] is not None:
-                distress_value[f] += h["value"]
+    # display-only risk exposure — counts by flag, plus book value sitting in each flag
+    distress = _risk_exposure(listed, "dflag")
+    drawdown = _risk_exposure(listed, "wflag")
 
     return {
         "as_of": str(pd.Timestamp(as_of).date()) if as_of is not None else None,
@@ -225,12 +245,8 @@ def scorecard(
         if (total_value is not None and total_cost) else None,
         "percentile_equal": pct_equal,
         "percentile_value": pct_value,
-        "distress": {
-            "known": distress_known,
-            "count": distress_count,
-            "value": distress_value if distress_known else None,
-            "at_risk": distress_count["high"] + distress_count["elevated"],
-        },
+        "distress": distress,
+        "drawdown": drawdown,
         "industry_concentration": _concentration(conc_set, "industry"),
         "sector_concentration": _concentration(conc_set, "sector"),
         "holdings": holdings,

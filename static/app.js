@@ -95,6 +95,7 @@
     renderStatus(status);
     Promise.all([api("/sectors"), api("/scan?sector=all")]).then(function (r) {
       Scan.initSectors(r[0]); Scan.render(r[1]);
+      Scan.loadWatched();
       var wait = Math.max(0, 1400 - (Date.now() - started));
       setTimeout(reveal, wait);
     }).catch(function (e) { loaderError("boot error — " + e.message); });
@@ -134,19 +135,49 @@
 
   // -- SCAN ------------------------------------------------------------------
   var Scan = {
+    watched: {},   // cik -> true, painted as the ☆ column (loaded once, kept in sync)
     initSectors: function (secs) {
       el("sector").innerHTML = secs.map(function (s) { return '<option value="' + esc(s) + '">' + esc(s) + "</option>"; }).join("");
     },
+    loadWatched: function () {
+      api("/watch-ids").then(function (d) {
+        Scan.watched = {};
+        (d.ciks || []).forEach(function (c) { Scan.watched[c] = true; });
+        Scan.paintStars();
+      }).catch(nop);
+    },
+    paintStars: function () {
+      Array.prototype.forEach.call(document.querySelectorAll("#scan-table .wcell"), function (td) {
+        var on = !!Scan.watched[+td.dataset.cik];
+        td.textContent = on ? "★" : "☆";
+        td.classList.toggle("on", on);
+      });
+    },
     render: function (rows) {
       var b = $("#scan-table tbody");
-      if (!rows.length) { b.innerHTML = '<tr><td colspan="7" class="empty">no matches</td></tr>'; return; }
+      if (!rows.length) { b.innerHTML = '<tr><td colspan="8" class="empty">no matches</td></tr>'; return; }
       b.innerHTML = rows.map(function (r) {
-        return '<tr data-cik="' + r.cik + '"><td class="num">' + r.rank + '</td><td class="tk">' + esc(r.ticker) +
+        var on = !!Scan.watched[r.cik];
+        return '<tr data-cik="' + r.cik + '"><td class="num">' + r.rank +
+          '</td><td class="wcell' + (on ? " on" : "") + '" data-cik="' + r.cik + '" title="watch / unwatch">' + (on ? "★" : "☆") +
+          '</td><td class="tk">' + esc(r.ticker) +
           "</td><td>" + esc(r.name) + "</td><td class=\"muted\">" + esc(r.sector) + '</td><td class="num">' + r.pct +
           '%</td><td class="num">' + r.decile + '</td><td class="num muted">' + (r.fy || "—") + "</td></tr>";
       }).join("");
       Array.prototype.forEach.call(b.querySelectorAll("tr"), function (tr) {
         tr.addEventListener("click", function () { Ticker.open(+tr.dataset.cik); });
+      });
+      // the star toggles the watchlist without leaving the scan (row click still drills in)
+      Array.prototype.forEach.call(b.querySelectorAll(".wcell"), function (td) {
+        td.addEventListener("click", function (e) {
+          e.stopPropagation();
+          apiPost("/watch/" + td.dataset.cik + "/toggle").then(function (d) {
+            if (d.watched) Scan.watched[+td.dataset.cik] = true;
+            else delete Scan.watched[+td.dataset.cik];
+            Scan.paintStars();
+            if (state.tk && state.cik === +td.dataset.cik) { state.tk.watched = d.watched; }
+          });
+        });
       });
     },
     markSelected: function (cik) {
@@ -169,7 +200,102 @@
   el("search").addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); Scan.submit(); } if (e.key === "Escape") el("search").blur(); });
   el("sector").addEventListener("change", Scan.query);
 
+  // -- shared grounded-chat widget --------------------------------------------
+  // ONE implementation for every ask surface (ticker, book): transcript, draft,
+  // pending question, busy/offline/refused states. All state lives on the
+  // instance, never in the DOM — async re-renders rebuild innerHTML at any time
+  // (the posDraft precedent). The server single-flights the LLM; a concurrent
+  // question shows the busy note instead of queueing.
+  function Chat(cfg) {
+    var o = { chat: [], busy: false, draft: "", pending: null, note: null, focus: false };
+    for (var k in cfg) o[k] = cfg[k];
+    o.reset = function () { o.chat = []; o.busy = false; o.draft = ""; o.pending = null; o.note = null; };
+    o.block = function () {
+      var h = '<div class="ai-read ask"><div class="ai-read-head"><span class="ai-tag">' + esc(o.tag) + "</span>" +
+        '<span class="ai-status muted">' + esc(o.status) + "</span></div>";
+      if (!o.chat.length && !o.busy) {
+        h += '<div class="ask-sugs">' + o.sugs.map(function (q) {
+          return '<span class="ask-sug" data-chat="' + esc(o.id) + '" data-q="' + esc(q) + '">' + esc(q) + "</span>";
+        }).join("") + "</div>";
+      }
+      o.chat.forEach(function (turn) {
+        h += '<div class="ask-q">' + esc(turn.q) + "</div>";
+        if (turn.offline) {
+          h += turn.timeout
+            ? '<div class="ask-a"><span class="warn">the local model timed out — it answered too slowly. Try again, or point STOCKSCAN_LLM_MODEL at a smaller model for chat.</span></div>'
+            : '<div class="ask-a"><span class="warn">the local model is unreachable — start Ollama (or set STOCKSCAN_LLM_URL), then ask again.</span></div>';
+        } else {
+          h += '<div class="ask-a' + (turn.refused ? " refused" : "") + '">' + esc(turn.a) +
+            (turn.refused ? ' <span class="warn">' + esc(o.refusedTag) + "</span>" : "") + "</div>";
+        }
+      });
+      if (o.busy) {
+        if (o.pending) h += '<div class="ask-q">' + esc(o.pending) + "</div>";
+        h += '<div class="ask-a muted">thinking … (local model)</div>';
+      }
+      h += '<div class="ask-form"><input id="' + o.id + '-q" placeholder="' + esc(o.placeholder) + '" autocomplete="off" value="' + esc(o.draft || "") + '"' + (o.busy ? " disabled" : "") + ">" +
+        '<button class="mini" id="btn-' + o.id + '"' + (o.busy ? " disabled" : "") + ">ask</button></div>";
+      if (o.note) h += '<div class="ask-flash warn">' + esc(o.note) + "</div>";
+      return h + "</div>";
+    };
+    o.wire = function () {
+      var aq = el(o.id + "-q");
+      if (aq) {
+        aq.oninput = function () { o.draft = aq.value; };
+        aq.onfocus = function () { o.focus = true; };
+        aq.onblur = function () { o.focus = false; };
+        aq.onkeydown = function (e) { if (e.key === "Enter") { e.preventDefault(); o.send(aq.value); } };
+        if (o.focus && document.activeElement !== aq) {   // survive async re-renders
+          aq.focus();
+          var L = aq.value.length; try { aq.setSelectionRange(L, L); } catch (x) {}
+        }
+      }
+      var ab = el("btn-" + o.id); if (ab) ab.onclick = function () { var i = el(o.id + "-q"); o.send(i ? i.value : ""); };
+      Array.prototype.forEach.call(document.querySelectorAll('.ask-sug[data-chat="' + o.id + '"]'), function (s) {
+        s.addEventListener("click", function () { o.send(s.dataset.q); });
+      });
+    };
+    o.send = function (q) {
+      q = String(q == null ? "" : q).trim();
+      if (!q || o.busy) return;
+      var token = o.guard ? o.guard() : null;   // e.g. the cik on screen at send time
+      o.draft = ""; o.note = null; o.pending = q; o.busy = true;
+      o.repaint();
+      // history = the browser's own transcript (server is stateless); refused and
+      // offline turns are dropped, and it's capped to the last 4 Q&As
+      var history = [];
+      o.chat.forEach(function (t) {
+        if (!t.refused && !t.offline) history.push({ role: "user", content: t.q }, { role: "assistant", content: t.a });
+      });
+      var done = function (turn, note) {
+        o.busy = false; o.pending = null;
+        if (o.guard && o.guard() !== token) return;   // user moved on — don't clobber
+        if (turn) o.chat = o.chat.concat([turn]);
+        o.note = note || null;
+        o.repaint();
+      };
+      apiPost(o.url(), { question: q, history: history.slice(-8) }).then(function (d) {
+        if (d && d.busy) { done(null, "the local model is busy with another request — try again in a moment"); return; }
+        if (!d || d.answer == null) { done({ q: q, offline: true }); return; }
+        var errs = (d.violations || []).map(String).filter(function (v) { return v.indexOf("llm-error") === 0; });
+        done({ q: q, a: d.answer, refused: !!d.refused && !errs.length,
+               offline: !!errs.length, timeout: errs.join(",").indexOf("Timeout") >= 0 });
+      }).catch(function () { done({ q: q, offline: true }); });
+    };
+    return o;
+  }
+
   // -- TICKER ----------------------------------------------------------------
+  var tickerChat = Chat({
+    id: "ask", tag: "ask",
+    status: "grounded chat — it answers from this page's data or refuses; not advice",
+    placeholder: "ask about the numbers on this page …",
+    refusedTag: "[refused — not in this name's data]",
+    sugs: ["why is it ranked here?", "why did it move this month?", "what are the risk flags?", "what does the news say?"],
+    url: function () { return "/ask/" + state.cik; },
+    guard: function () { return state.cik; },
+    repaint: function () { Ticker.render(); },
+  });
   var Ticker = {
     open: function (cik) {
       state.cik = cik;
@@ -179,7 +305,8 @@
       switchView("ticker");
       el("tk-body").innerHTML = '<div class="muted">loading …</div>';
       api("/ticker/" + cik).then(function (res) {
-        state.tk = { res: res, price: null, ohlc: null, quote: null, profile: null, events: null, news: null, watched: false, narr: null, position: null, posDraft: null, chat: [], askDraft: "", askNote: null };
+        state.tk = { res: res, price: null, ohlc: null, quote: null, profile: null, events: null, news: null, watched: false, narr: null, position: null, posDraft: null };
+        tickerChat.reset();   // a fresh name gets a fresh transcript
         Ticker.render();
         Promise.all([
           api("/price/" + cik).then(function (d) { state.tk.price = d; }).catch(nop),
@@ -263,7 +390,7 @@
       // button upgrades to the local-model read; a dead LLM degrades back and says so.
       h.push(Ticker.aiReadBlock(t, r));
       // grounded chat — the narration made interactive; refuses over fabricating
-      h.push(Ticker.askBlock(t));
+      h.push(tickerChat.block());
       // news + events
       h.push(Ticker.enrichBlock("news memory (Intrinio)", t.news, function (a) {
         return '<span class="date">' + esc(a.date) + "</span>  " + (a.event_type && a.event_type !== "other" ? '<span class="ev">' + esc(a.event_type) + "</span> " : "") +
@@ -313,68 +440,6 @@
         '<span class="ai-note">a local LLM’s opinion, grounded to the filing (plus any news it cites) — not a price forecast</span></div>';
       return h + "</div>";
     },
-    // -- ask: grounded chat over THIS name's computed data --------------------
-    // Same honesty contract as the AI read, made conversational: the local model
-    // answers ONLY from the packet + the display reads + recalled news; a made-up
-    // number is caught server-side and it refuses instead. Transcript and draft
-    // live on state.tk so async re-renders can't wipe them (posDraft precedent).
-    askBlock: function (t) {
-      var chat = t.chat || [];
-      var busy = state.asking === state.cik;
-      var h = '<div class="ai-read ask"><div class="ai-read-head"><span class="ai-tag">ask</span>' +
-        '<span class="ai-status muted">grounded chat — it answers from this page\'s data or refuses; not advice</span></div>';
-      if (!chat.length && !busy) {
-        h += '<div class="ask-sugs">' + ["why is it ranked here?", "what changed since last year?", "what are the risk flags?", "what does the news say?"].map(function (q) {
-          return '<span class="ask-sug" data-q="' + esc(q) + '">' + esc(q) + "</span>";
-        }).join("") + "</div>";
-      }
-      chat.forEach(function (turn) {
-        h += '<div class="ask-q">' + esc(turn.q) + "</div>";
-        if (turn.offline) {
-          h += '<div class="ask-a"><span class="warn">the local model is unreachable — start Ollama (or set STOCKSCAN_LLM_URL), then ask again.</span></div>';
-        } else {
-          h += '<div class="ask-a' + (turn.refused ? " refused" : "") + '">' + esc(turn.a) +
-            (turn.refused ? ' <span class="warn">[refused — not in this name\'s data]</span>' : "") + "</div>";
-        }
-      });
-      if (busy) {
-        if (t.askPending) h += '<div class="ask-q">' + esc(t.askPending) + "</div>";
-        h += '<div class="ask-a muted">thinking … (local model)</div>';
-      }
-      h += '<div class="ask-form"><input id="ask-q" placeholder="ask about the numbers on this page …" autocomplete="off" value="' + esc(t.askDraft || "") + '"' + (busy ? " disabled" : "") + ">" +
-        '<button class="mini" id="btn-ask"' + (busy ? " disabled" : "") + ">ask</button></div>";
-      if (t.askNote) h += '<div class="ask-flash warn">' + esc(t.askNote) + "</div>";
-      return h + "</div>";
-    },
-    ask: function (q) {
-      var cik = state.cik, t = state.tk;
-      if (!cik || !t) return;
-      q = String(q == null ? "" : q).trim();
-      if (!q || state.asking === cik) return;
-      t.askDraft = ""; t.askNote = null; t.askPending = q;
-      state.asking = cik;
-      Ticker.render();
-      // history = the browser's own transcript (server is stateless); refused and
-      // offline turns are dropped, like ask.py's REPL, and capped to the last 4 Q&As
-      var history = [];
-      (t.chat || []).forEach(function (turn) {
-        if (!turn.refused && !turn.offline) history.push({ role: "user", content: turn.q }, { role: "assistant", content: turn.a });
-      });
-      var done = function (turn, note) {
-        if (state.asking === cik) state.asking = null;
-        if (state.cik !== cik || !state.tk) return;   // user moved on — don't clobber
-        if (turn) state.tk.chat = (state.tk.chat || []).concat([turn]);
-        state.tk.askPending = null;
-        state.tk.askNote = note || null;
-        Ticker.render();
-      };
-      apiPost("/ask/" + cik, { question: q, history: history.slice(-8) }).then(function (d) {
-        if (d && d.busy) { done(null, "the local model is busy with another request — try again in a moment"); return; }
-        if (!d || d.answer == null) { done({ q: q, offline: true }); return; }
-        var offline = (d.violations || []).some(function (v) { return String(v).indexOf("llm-error") === 0; });
-        done({ q: q, a: d.answer, refused: !!d.refused && !offline, offline: offline });
-      }).catch(function () { done({ q: q, offline: true }); });
-    },
     profileBlock: function (p) {
       if (p == null) return '<div class="muted" style="margin-top:8px">company profile · loading …</div>';
       if (!p || !p.description) return "";
@@ -394,6 +459,7 @@
         var s = pr.summary;
         var adv = s.adv ? " · " + term("adv", "ADV $" + (s.adv / 1e6).toFixed(1) + "M") : "";
         h += '<div class="price-line"><span class="last"><b>' + Number(s.last).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + "</b></span>" +
+          '<span>1w <span class="' + pctColor(s.chg_1w) + '">' + sign(s.chg_1w) + "</span></span>" +
           '<span>1m <span class="' + pctColor(s.chg_1m) + '">' + sign(s.chg_1m) + "</span></span>" +
           '<span>3m <span class="' + pctColor(s.chg_3m) + '">' + sign(s.chg_3m) + "</span></span>" +
           '<span>1y <span class="' + pctColor(s.chg_1y) + '">' + sign(s.chg_1y) + "</span></span>" +
@@ -577,26 +643,19 @@
       var prm = el("btn-pos-remove"); if (prm) prm.onclick = Ticker.removePosition;
       var psh = el("pos-shares"); if (psh) psh.oninput = Ticker.onPosInput;
       var pco = el("pos-cost"); if (pco) pco.oninput = Ticker.onPosInput;
-      // ask box: draft + focus survive the async re-renders (quote/profile/news arrivals)
-      var aq = el("ask-q");
-      if (aq) {
-        aq.oninput = function () { if (state.tk) state.tk.askDraft = aq.value; };
-        aq.onfocus = function () { state.askFocus = true; };
-        aq.onblur = function () { state.askFocus = false; };
-        aq.onkeydown = function (e) { if (e.key === "Enter") { e.preventDefault(); Ticker.ask(aq.value); } };
-        if (state.askFocus && document.activeElement !== aq) {
-          aq.focus();
-          var L = aq.value.length; try { aq.setSelectionRange(L, L); } catch (x) {}
-        }
-      }
-      var ab = el("btn-ask"); if (ab) ab.onclick = function () { var i = el("ask-q"); Ticker.ask(i ? i.value : ""); };
-      Array.prototype.forEach.call(document.querySelectorAll(".ask-sug"), function (s) {
-        s.addEventListener("click", function () { Ticker.ask(s.dataset.q); });
-      });
+      tickerChat.wire();
       Ticker.updatePL();
     },
     toggleChart: function () { state.chart = state.chart === "candle" ? "line" : "candle"; Ticker.render(); },
-    toggleWatch: function () { if (!state.cik) return; apiPost("/watch/" + state.cik + "/toggle").then(function (d) { state.tk.watched = d.watched; Ticker.render(); }); },
+    toggleWatch: function () {
+      if (!state.cik) return;
+      apiPost("/watch/" + state.cik + "/toggle").then(function (d) {
+        state.tk.watched = d.watched;
+        if (d.watched) Scan.watched[state.cik] = true; else delete Scan.watched[state.cik];
+        Scan.paintStars();
+        Ticker.render();
+      });
+    },
     live: function () { if (state.cik) api("/live/quote/" + state.cik + "?refresh=true").then(function (d) { state.tk.quote = d; Ticker.render(); }); },
     autolive: function () {
       if (state.auto) { clearInterval(state.auto); state.auto = null; }
@@ -718,10 +777,65 @@
 
   // -- WATCH -----------------------------------------------------------------
   var Watch = {
+    digest: null,     // GET /digest payload (deterministic card)
+    brief: null,      // POST /digest result (grounded LLM prose, on demand)
+    // last night, as a one-line card: job statuses + unseen alerts + paper progress,
+    // straight from the ops record (no LLM). The ✦ button asks the local model for
+    // the grounded morning brief over the SAME numbers — busy/offline degrade visibly.
+    digestCard: function () {
+      var d = Watch.digest;
+      var h = '<div class="digest"><div class="section-h">overnight digest</div>';
+      if (!d) return h + '<div class="muted">loading …</div></div>';
+      var jobs = d.jobs || {};
+      var parts = Object.keys(jobs).map(function (j) {
+        var s = jobs[j].status || "?";
+        var cls = s === "failed" ? "neg" : s === "degraded" ? "warn" : "muted";
+        return esc(j) + ' <span class="' + cls + '">' + esc(s) + "</span>";
+      });
+      h += '<div class="digest-line">' + (parts.length ? parts.join(" · ") : '<span class="muted">no runs recorded yet</span>') + "</div>";
+      var n = d.n_unseen_alerts || 0;
+      h += '<div class="digest-line">' + (n ? '<span class="warn">' + n + " unseen alert" + (n === 1 ? "" : "s") + "</span> — listed below" : '<span class="muted">no unseen alerts</span>');
+      var p = d.paper_forward;
+      if (p) {
+        h += ' · paper <span class="muted">' + (p.months_scored_oos || 0) + " OOS month" + (p.months_scored_oos === 1 ? "" : "s") + " graded" +
+          (p.live_mean_ic != null ? " · live IC " + esc(p.live_mean_ic) : "") +
+          (p.degraded === true ? ' · <span class="neg">degraded</span>' : p.degraded === false ? " · on track" : "") + "</span>";
+      }
+      h += "</div>";
+      var busy = state.digesting;
+      if (Watch.brief && Watch.brief.answer) {
+        var off = (Watch.brief.violations || []).some(function (v) { return String(v).indexOf("llm-error") === 0; });
+        h += off ? '<div class="ask-a"><span class="warn">the local model is unreachable — the card above is the full record.</span></div>'
+                 : '<div class="ask-a">' + esc(Watch.brief.answer) + "</div>";
+      }
+      h += '<div class="ask-form" style="margin-top:8px"><button class="mini" id="btn-digest"' + (busy ? " disabled" : "") + ">" +
+        (busy ? "writing …" : Watch.brief ? "re-run morning brief" : "✦ morning brief (local model)") + "</button>" +
+        '<span class="ai-note">a grounded read of the numbers above — it can\'t invent a stat</span></div>';
+      return h + "</div>";
+    },
+    runBrief: function () {
+      if (state.digesting) return;
+      state.digesting = true;
+      Watch.paint();                     // repaint with the busy button
+      apiPost("/digest").then(function (d) {
+        state.digesting = false;
+        if (d && d.busy) Watch.brief = { answer: "the local model is busy with another request — try again in a moment" };
+        else Watch.brief = d || null;
+        Watch.paint();
+      }).catch(function () { state.digesting = false; Watch.paint(); });
+    },
+    data: null,       // GET /watch payload
     load: function () {
-      api("/watch").then(function (w) {
-        var h = ['<div class="section-h">watchlist</div>'];
-        if (!w.rows.length) h.push('<div class="empty">watchlist empty — use <code>ops.py watch add</code></div>');
+      api("/digest").then(function (d) { Watch.digest = d; Watch.paint(); }).catch(nop);
+      api("/watch").then(function (w) { Watch.data = w; Watch.paint(); });
+      Watch.paint();
+    },
+    paint: function () {
+      var w = Watch.data;
+      var h = [Watch.digestCard(), '<div class="section-h">watchlist</div>'];
+      if (!w) h.push('<div class="muted">loading …</div>');
+      else {
+        if (!w.rows.length) h.push('<div class="empty">watchlist empty — star ☆ a name on the scan table, or ☆ watch on any company page</div>');
         else {
           h.push('<table class="grid" id="watch-table"><thead><tr><th>ticker</th><th class="num">' + term("pct", "model") + '</th><th class="num">Δ 30d</th><th>last 10-K</th><th>flag</th></tr></thead><tbody>');
           w.rows.forEach(function (r) {
@@ -734,9 +848,10 @@
         h.push('<div class="section-h">alerts</div>');
         if (!w.alerts.length) h.push('<div class="muted">no alerts</div>');
         else { h.push('<table class="grid"><tbody>'); w.alerts.forEach(function (a) { h.push('<tr><td class="alert-star">' + (a.seen ? " " : "*") + '</td><td class="muted">' + esc((a.created || "").slice(0, 16)) + "</td><td>" + esc(a.kind) + "</td><td>" + esc(a.message) + "</td></tr>"); }); h.push("</tbody></table>"); }
-        el("watch-body").innerHTML = h.join("");
-        Array.prototype.forEach.call(document.querySelectorAll("#watch-table tbody tr"), function (tr) { tr.addEventListener("click", function () { Ticker.open(+tr.dataset.cik); }); });
-      });
+      }
+      el("watch-body").innerHTML = h.join("");
+      var bd = el("btn-digest"); if (bd) bd.onclick = Watch.runBrief;
+      Array.prototype.forEach.call(document.querySelectorAll("#watch-table tbody tr"), function (tr) { tr.addEventListener("click", function () { Ticker.open(+tr.dataset.cik); }); });
     },
   };
 
@@ -745,10 +860,18 @@
   // snapshot — equal- AND value-weighted percentile, distress exposure, and
   // concentration — with the full holdings list ALWAYS shown so no single number
   // stands in for the distribution. Never a portfolio forecast.
+  var bookChat = Chat({
+    id: "bk-ask", tag: "ask the book",
+    status: "grounded chat — it answers from this scorecard's data or refuses; a snapshot, not advice",
+    placeholder: "ask about the numbers on this scorecard …",
+    refusedTag: "[refused — not in this book's data]",
+    sugs: ["where does my book rank?", "how concentrated am I?", "which names are risk-flagged?", "what's my unrealized P/L?"],
+    url: function () { return "/ask/book"; },
+    repaint: function () { Scorecard.rerender(); },
+    // no reset on tab switches: the book is one conversation, the transcript keeps
+  });
   var Scorecard = {
-    // ask-chat state lives HERE (not in the DOM) so tab switches and reload
-    // re-renders keep the transcript; mirrors the ticker ask's state.tk precedent.
-    data: null, chat: [], asking: false, askDraft: "", askPending: null, askNote: null, askFocus: false,
+    data: null,
     load: function () {
       el("scorecard-body").innerHTML = '<div class="muted">loading …</div>';
       api("/scorecard").then(Scorecard.render).catch(function (e) {
@@ -770,6 +893,31 @@
           '<span class="sc-cpct num">' + Math.round(w * 100) + '%</span><span class="sc-ccnt muted">' + b.count + " name" + (b.count === 1 ? "" : "s") + "</span></div>");
       });
       return h.join("") + "</div>";
+    },
+    riskBlock: function (title, risk, note) {
+      if (!risk || !risk.known) return "";
+      var h = ['<div class="section-h">' + esc(title) + " · display-only risk flag, never a trade input</div>"];
+      if (risk.at_risk) {
+        h.push('<div class="sc-flags">' +
+          (risk.count.high ? '<span class="badge red">' + risk.count.high + " high</span>" : "") +
+          (risk.count.elevated ? '<span class="badge yellow">' + risk.count.elevated + " elevated</span>" : "") +
+          '<span class="badge dim">' + risk.count.normal + " normal</span></div>");
+        if (risk.value && (risk.value.high || risk.value.elevated)) {
+          h.push('<div class="hp-reason">' + money(risk.value.high + risk.value.elevated) +
+            " of book value sits in flagged names — " + esc(note) + ".</div>");
+        }
+      } else {
+        h.push('<div class="muted">No holdings flagged — all ' + risk.count.normal + " rank normal on this head.</div>");
+      }
+      return h.join("");
+    },
+    riskCell: function (flag, prob, fallback) {
+      if (flag && flag !== "normal") {
+        var cls = flag === "high" ? "neg" : "warn";
+        return '<span class="' + cls + '">' + esc(flag) + "</span>" +
+          (prob != null ? ' <span class="muted">' + Math.round(prob * 100) + "%</span>" : "");
+      }
+      return fallback || '<span class="muted">—</span>';
     },
     render: function (sc) {
       Scorecard.data = sc;
@@ -802,23 +950,8 @@
         '</div><div class="sc-lab">' + (sc.percentile_value == null ? term("valueweight", "value-weight") + " · add shares to enable" : term("valueweight", "value-weighted") + " · your holdings by size") + "</div></div></div>");
       h.push('<div class="hp-reason">Both are shown on purpose — equal-weight treats every name the same; value-weight leans on where your money actually sits. A peer-rank percentile, not a return estimate.</div>');
 
-      // distress exposure (only when the risk head is loaded)
-      if (sc.distress && sc.distress.known) {
-        var d = sc.distress;
-        h.push('<div class="section-h">distress exposure · display-only risk flag, never a trade input</div>');
-        if (d.at_risk) {
-          h.push('<div class="sc-flags">' +
-            (d.count.high ? '<span class="badge red">' + d.count.high + " high</span>" : "") +
-            (d.count.elevated ? '<span class="badge yellow">' + d.count.elevated + " elevated</span>" : "") +
-            '<span class="badge dim">' + d.count.normal + " normal</span></div>");
-          if (d.value && (d.value.high || d.value.elevated)) {
-            h.push('<div class="hp-reason">' + money(d.value.high + d.value.elevated) +
-              " of book value sits in flagged names — learned P(distress / delist within ~12mo).</div>");
-          }
-        } else {
-          h.push('<div class="muted">No holdings flagged — all ' + d.count.normal + " rank normal on the distress head.</div>");
-        }
-      }
+      h.push(Scorecard.riskBlock("distress exposure", sc.distress, "learned P(distress / delist within ~12mo)"));
+      h.push(Scorecard.riskBlock("large-drawdown exposure", sc.drawdown, "learned P(≥30% peak-to-trough drawdown within ~6mo)"));
 
       // concentration — value-weighted bars (falls back to count when unpriced)
       h.push(Scorecard.concentration("industry concentration", sc.industry_concentration));
@@ -827,12 +960,12 @@
       h.push('<div class="section-h">names · ' + sc.n_owned + " held, " + sc.n_watch + " watched</div>");
       h.push('<table class="grid" id="sc-table"><thead><tr>' +
         "<th>ticker</th><th>name</th><th>industry</th><th class=\"num\">shares</th>" +
-        '<th class="num">value</th><th class="num">' + term("pct", "model") + '</th><th class="num">' + term("decile", "dec") + "</th><th>" + term("distress", "risk") + '</th><th class="num">P/L</th>' +
+        '<th class="num">value</th><th class="num">' + term("pct", "model") + '</th><th class="num">' + term("decile", "dec") + "</th><th>" + term("distress", "risk") + '</th><th>drawdown</th><th class="num">P/L</th>' +
         "</tr></thead><tbody>");
       sc.holdings.slice().sort(function (a, b) { return (b.owned ? 1 : 0) - (a.owned ? 1 : 0); }).forEach(function (p) {
-        var flag = p.dflag && p.dflag !== "normal"
-          ? '<span class="' + (p.dflag === "high" ? "neg" : "warn") + '">' + esc(p.dflag) + "</span>"
-          : (p.in_universe ? '<span class="muted">—</span>' : '<span class="warn">' + esc(p.status) + "</span>");
+        var absent = p.in_universe ? '<span class="muted">—</span>' : '<span class="warn">' + esc(p.status) + "</span>";
+        var flag = Scorecard.riskCell(p.dflag, p.dprob, absent);
+        var draw = Scorecard.riskCell(p.wflag, p.wprob, absent);
         var plc2 = p.unrealized_pl == null ? "muted" : p.unrealized_pl >= 0 ? "pos" : "neg";
         var tag = p.owned ? "" : ' <span class="sc-tag">watch</span>';
         h.push('<tr data-cik="' + p.cik + '">' +
@@ -844,6 +977,7 @@
           '<td class="num">' + (p.pct != null ? p.pct + "%" : "—") + "</td>" +
           '<td class="num">' + (p.decile != null ? p.decile : "—") + "</td>" +
           "<td>" + flag + "</td>" +
+          "<td>" + draw + "</td>" +
           '<td class="num ' + plc2 + '">' + (p.unrealized_pl != null ? plMoney(p.unrealized_pl) : "—") + "</td>" +
           "</tr>");
       });
@@ -852,88 +986,15 @@
       // grounded chat over the BOOK — the scorecard made interactive; same honesty
       // contract as the ticker ask, at aggregate level: it answers from this tab's
       // data (both weightings, snapshot not outlook) or refuses; never advice.
-      h.push(Scorecard.askBlock());
+      h.push(bookChat.block());
 
       el("scorecard-body").innerHTML = h.join("");
       Array.prototype.forEach.call(document.querySelectorAll("#sc-table tbody tr"), function (tr) {
         tr.addEventListener("click", function () { Ticker.open(+tr.dataset.cik); });
       });
-      Scorecard.wireAsk();
-    },
-    askBlock: function () {
-      var chat = Scorecard.chat || [];
-      var busy = Scorecard.asking;
-      var h = '<div class="ai-read ask"><div class="ai-read-head"><span class="ai-tag">ask the book</span>' +
-        '<span class="ai-status muted">grounded chat — it answers from this scorecard\'s data or refuses; a snapshot, not advice</span></div>';
-      if (!chat.length && !busy) {
-        h += '<div class="ask-sugs">' + ["where does my book rank?", "how concentrated am I?", "which names are risk-flagged?", "what's my unrealized P/L?"].map(function (q) {
-          return '<span class="ask-sug bk-ask-sug" data-q="' + esc(q) + '">' + esc(q) + "</span>";
-        }).join("") + "</div>";
-      }
-      chat.forEach(function (turn) {
-        h += '<div class="ask-q">' + esc(turn.q) + "</div>";
-        if (turn.offline) {
-          h += '<div class="ask-a"><span class="warn">the local model is unreachable — start Ollama (or set STOCKSCAN_LLM_URL), then ask again.</span></div>';
-        } else {
-          h += '<div class="ask-a' + (turn.refused ? " refused" : "") + '">' + esc(turn.a) +
-            (turn.refused ? ' <span class="warn">[refused — not in this book\'s data]</span>' : "") + "</div>";
-        }
-      });
-      if (busy) {
-        if (Scorecard.askPending) h += '<div class="ask-q">' + esc(Scorecard.askPending) + "</div>";
-        h += '<div class="ask-a muted">thinking … (local model)</div>';
-      }
-      h += '<div class="ask-form"><input id="bk-ask-q" placeholder="ask about the numbers on this scorecard …" autocomplete="off" value="' + esc(Scorecard.askDraft || "") + '"' + (busy ? " disabled" : "") + ">" +
-        '<button class="mini" id="btn-bk-ask"' + (busy ? " disabled" : "") + ">ask</button></div>";
-      if (Scorecard.askNote) h += '<div class="ask-flash warn">' + esc(Scorecard.askNote) + "</div>";
-      return h + "</div>";
-    },
-    wireAsk: function () {
-      // draft + focus survive re-renders (mirrors the ticker ask box); distinct
-      // ids/classes so the hidden ticker view's ask box never cross-wires.
-      var aq = el("bk-ask-q");
-      if (aq) {
-        aq.oninput = function () { Scorecard.askDraft = aq.value; };
-        aq.onfocus = function () { Scorecard.askFocus = true; };
-        aq.onblur = function () { Scorecard.askFocus = false; };
-        aq.onkeydown = function (e) { if (e.key === "Enter") { e.preventDefault(); Scorecard.ask(aq.value); } };
-        if (Scorecard.askFocus && document.activeElement !== aq) {
-          aq.focus();
-          var L = aq.value.length; try { aq.setSelectionRange(L, L); } catch (x) {}
-        }
-      }
-      var ab = el("btn-bk-ask"); if (ab) ab.onclick = function () { var i = el("bk-ask-q"); Scorecard.ask(i ? i.value : ""); };
-      Array.prototype.forEach.call(document.querySelectorAll(".bk-ask-sug"), function (s) {
-        s.addEventListener("click", function () { Scorecard.ask(s.dataset.q); });
-      });
+      bookChat.wire();
     },
     rerender: function () { if (Scorecard.data) Scorecard.render(Scorecard.data); },
-    ask: function (q) {
-      q = String(q == null ? "" : q).trim();
-      if (!q || Scorecard.asking) return;
-      Scorecard.askDraft = ""; Scorecard.askNote = null; Scorecard.askPending = q;
-      Scorecard.asking = true;
-      Scorecard.rerender();
-      // history = the browser's own transcript (server is stateless); refused and
-      // offline turns are dropped, and it's capped to the last 4 Q&As
-      var history = [];
-      (Scorecard.chat || []).forEach(function (turn) {
-        if (!turn.refused && !turn.offline) history.push({ role: "user", content: turn.q }, { role: "assistant", content: turn.a });
-      });
-      var done = function (turn, note) {
-        Scorecard.asking = false;
-        if (turn) Scorecard.chat = (Scorecard.chat || []).concat([turn]);
-        Scorecard.askPending = null;
-        Scorecard.askNote = note || null;
-        Scorecard.rerender();
-      };
-      apiPost("/ask/book", { question: q, history: history.slice(-8) }).then(function (d) {
-        if (d && d.busy) { done(null, "the local model is busy with another request — try again in a moment"); return; }
-        if (!d || d.answer == null) { done({ q: q, offline: true }); return; }
-        var offline = (d.violations || []).some(function (v) { return String(v).indexOf("llm-error") === 0; });
-        done({ q: q, a: d.answer, refused: !!d.refused && !offline, offline: offline });
-      }).catch(function () { done({ q: q, offline: true }); });
-    },
   };
 
   // -- PAPER -----------------------------------------------------------------

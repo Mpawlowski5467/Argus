@@ -137,6 +137,7 @@ def build_fundamental_panel(
     min_names: int = 30,
     reason_return: dict | None = None,
     dollar_volume: pd.DataFrame | None = None,
+    liquidity_price: pd.DataFrame | None = None,
     min_dollar_volume: float | None = None,
     min_price: float = 1.0,
     winsorize: tuple[float, float] | None = None,
@@ -160,6 +161,7 @@ def build_fundamental_panel(
     fwd = forward_return_to_last(close, horizon)
     idx = close.index
     dv_med = dollar_volume.rolling(20, min_periods=10).median() if dollar_volume is not None else None
+    liq_price = liquidity_price if liquidity_price is not None else close
 
     rows, coverage = [], []
     for d in month_end_dates(close.index):
@@ -192,7 +194,7 @@ def build_fundamental_panel(
         # Liquidity filter: keep imputed failures (their missing price is a data gap, not an
         # illiquidity signal) plus priced names clearing the dollar-volume and price floors.
         if dv_med is not None and min_dollar_volume:
-            liquid = liquidity_mask(latest, d, close, dv_med, min_dollar_volume, min_price)
+            liquid = liquidity_mask(latest, d, liq_price, dv_med, min_dollar_volume, min_price)
             latest = latest[latest["imputed"] | liquid]
 
         # Price features attach as-of d (a month-end trading day in close.index),

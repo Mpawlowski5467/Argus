@@ -323,7 +323,8 @@ def analyze(
     if calibration is not None:
         try:
             confidence = score_confidence(
-                decile, packet["model"]["percentile"], drivers, flags, calibration
+                decile, packet["model"]["percentile"], drivers, flags, calibration,
+                {"drawdown": drawdown}
             )
         except Exception:
             confidence = None

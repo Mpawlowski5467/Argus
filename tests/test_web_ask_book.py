@@ -29,6 +29,10 @@ def _sc():
                      "count": {"high": 0, "elevated": 1, "normal": 1},
                      "value": {"high": 250.0, "elevated": 1500.0, "normal": 2000.0},
                      "at_risk": 1},
+        "drawdown": {"known": True,
+                     "count": {"high": 1, "elevated": 0, "normal": 1},
+                     "value": {"high": 1512.5678, "elevated": 0.0, "normal": 2000.0},
+                     "at_risk": 1},
         "industry_concentration": [
             {"name": "Semiconductors", "count": 1,
              "weight_count": 0.5, "weight_value": 0.5714},
@@ -42,18 +46,21 @@ def _sc():
              "ticker": "AAA", "name": "Alpha", "industry": "Semiconductors",
              "shares": 100.0, "value": 2000.0, "cost": 1000.0,
              "unrealized_pl": 1000.0, "unrealized_pl_pct": 100.0,
-             "pct": 90, "decile": 10, "dflag": "normal", "dprob": None},
+             "pct": 90, "decile": 10, "dflag": "normal", "dprob": None,
+             "wflag": "normal", "wprob": 0.20},
             {"cik": 2, "owned": True, "in_universe": True, "status": "listed",
              "ticker": "BBB", "name": "Beta", "industry": "Banks",
              "shares": 50.0, "value": 1512.5678, "cost": 2000.0,
              "unrealized_pl": -487.4322, "unrealized_pl_pct": -24.3721,
-             "pct": 30, "decile": 3, "dflag": "elevated", "dprob": 0.034},
+             "pct": 30, "decile": 3, "dflag": "elevated", "dprob": 0.034,
+             "wflag": "high", "wprob": 0.724},
             {"cik": 9, "owned": False, "in_universe": False,
              "status": "not in liquid universe / lapsed filer",
              "ticker": "—", "name": "", "industry": "Unknown",
              "shares": None, "value": None, "cost": None,
              "unrealized_pl": None, "unrealized_pl_pct": None,
-             "pct": None, "decile": None, "dflag": None, "dprob": None},
+             "pct": None, "decile": None, "dflag": None, "dprob": None,
+             "wflag": None, "wprob": None},
         ],
     }
 
@@ -63,12 +70,13 @@ def _sc():
 def test_book_context_makes_display_numbers_citable():
     ctx = build_book_context(_sc())
     # the phrasings the book tab shows must trace: rounded percentiles ("58th"),
-    # 1-dp P/L percents, whole-percent concentration, dprob as a percent, and the
-    # flagged-value sum the distress line prints (250 + 1500 = 1750)
+    # 1-dp P/L percents, whole-percent concentration, risk probs as percents, and the
+    # flagged-value sums the risk lines print (distress: 1750; drawdown: 1512.57)
     text = ("the book ranks 58th equal-weight and 63rd value-weight; unrealized "
             "P/L up 17.1% on 3,512.57 of value; 57% of the money sits in "
             "Semiconductors; BBB is down 24.4% and carries distress P about 3.4%; "
-            "1,750.00 of book value sits in flagged names")
+            "large-drawdown P about 72.4%; 1,750.00 of book value sits in flagged "
+            "distress names and 1,512.57 in drawdown-flagged names")
     assert check_grounding(text, ctx) == []
     # while a fabricated figure still violates
     assert check_grounding("the book should return 8% a year", ctx) == [8.0]
@@ -82,10 +90,13 @@ def test_book_context_carries_honest_notes_and_does_not_mutate():
     assert "nothing here is a portfolio forecast" in ctx["note"]
     assert "cite both together" in ctx["weighting_note"]
     assert "never a trade input" in ctx["distress"]["note"]
+    assert "large drawdown" in ctx["drawdown"]["note"]
     assert ctx["distress"]["value_at_risk"] == 1750.0
+    assert ctx["drawdown"]["value_at_risk"] == 1512.5678
     assert ctx["percentile_equal_round"] == 58                # JS Math.round(57.5)
     assert ctx["percentile_value_round"] == 63
     assert ctx["holdings"][1]["dprob_pct"] == 3.4
+    assert ctx["holdings"][1]["wprob_pct"] == 72.4
     assert ctx["holdings"][1]["unrealized_pl_pct_round"] == 24.4        # abs, 1dp
     assert ctx["industry_concentration"][0]["weight_value_pct"] == 57
 
@@ -95,11 +106,14 @@ def test_book_context_omits_twins_for_absent_numbers():
     sc["percentile_value"] = None                  # nothing held with a price yet
     sc["unrealized_pl_pct"] = None
     sc["distress"] = {"known": False, "count": {}, "value": None, "at_risk": 0}
+    sc["drawdown"] = {"known": False, "count": {}, "value": None, "at_risk": 0}
     ctx = build_book_context(sc)
     assert "percentile_value_round" not in ctx
     assert "unrealized_pl_pct_round" not in ctx
     assert "value_at_risk" not in ctx["distress"]  # no per-flag values to sum
+    assert "value_at_risk" not in ctx["drawdown"]
     assert "note" in ctx["distress"]               # the framing still rides along
+    assert "note" in ctx["drawdown"]
 
 
 def test_book_context_handles_an_empty_book():

@@ -74,3 +74,39 @@ def test_no_impute_uses_real_terminal_returns_and_never_imputes():
     ddd = jan.loc[jan["cik"] == 2].iloc[0]
     assert abs(ddd["label"] - (terminal / entry - 1)) < 1e-9
     assert ddd["label"] < -0.5  # the decline is captured, not dropped
+
+
+def test_unadjusted_liquidity_price_changes_membership_not_return_labels():
+    """A controlled rebaseline can use raw price for the liquidity floor while labels
+    still come from adjusted total-return closes. Defaults remain adjusted-only."""
+    idx = pd.bdate_range("2024-01-01", "2024-03-29")
+    close = pd.DataFrame({
+        "AAA": np.linspace(100.0, 110.0, len(idx)),
+        "LOW": np.linspace(0.50, 0.60, len(idx)),  # adjusted below $1, raw will be $30
+    }, index=idx)
+    raw_price = close.copy()
+    raw_price["LOW"] = 30.0
+    dv = pd.DataFrame(2_000_000.0, index=idx, columns=close.columns)
+    ticker_map = {1: "AAA", 2: "LOW", 3: "CCC"}
+
+    default = build_fundamental_panel(
+        _features(), close, delistings=None, ticker_map=ticker_map,
+        horizon=21, min_names=1, dollar_volume=dv, min_dollar_volume=1_000_000,
+    )
+    rebased = build_fundamental_panel(
+        _features(), close, delistings=None, ticker_map=ticker_map,
+        horizon=21, min_names=1, dollar_volume=dv, min_dollar_volume=1_000_000,
+        liquidity_price=raw_price,
+    )
+
+    jan_default = default[default["date"] == pd.Timestamp("2024-01-31")]
+    jan_rebased = rebased[rebased["date"] == pd.Timestamp("2024-01-31")]
+    assert set(jan_default["cik"]) == {1}
+    assert set(jan_rebased["cik"]) == {1, 2}
+
+    low = jan_rebased.loc[jan_rebased["cik"] == 2].iloc[0]
+    expected_label = (
+        close["LOW"].shift(-21).loc[pd.Timestamp("2024-01-31")]
+        / close.loc[pd.Timestamp("2024-01-31"), "LOW"] - 1
+    )
+    assert abs(low["label"] - expected_label) < 1e-9

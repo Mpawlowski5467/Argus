@@ -15,15 +15,13 @@ and bans any portfolio forecast or advice outright.
 
 from __future__ import annotations
 
-import math
-
-from .core import grounded_answer
+from .core import grounded_answer, isnum as _num, jsround as _jsround, pct1 as _pct1
 
 PORTFOLIO_SYSTEM = (
     "You are a careful equity fundamentals analyst answering questions about the "
     "user's BOOK — the set of names they hold or watch — using ONLY the JSON CONTEXT "
     "you are given (a same-day scorecard: per-name model standing, position values "
-    "and P/L from the last close, distress flags, and concentration).\n"
+    "and P/L from the last close, distress/drawdown risk flags, and concentration).\n"
     "RULES:\n"
     "- Use ONLY numbers that appear in the context. Never invent, estimate, round "
     "differently, or compute new figures — no arithmetic, which at book level means "
@@ -40,8 +38,8 @@ PORTFOLIO_SYSTEM = (
     "sits). If one is missing from the context, say so. Never let a single collapsed "
     "number stand in for the book.\n"
     "- A percentile is a peer rank — the share of scored names ranked below today — "
-    "not a probability of gains. Distress flags are display-only risk flags from a "
-    "separate firewalled model, never trade inputs.\n"
+    "not a probability of gains. Distress and drawdown flags are display-only risk "
+    "flags from separate firewalled models, never trade inputs.\n"
     "- Values, prices, and P/L come from the last close: they describe what already "
     "happened, not an outlook.\n"
     "- A name marked outside the liquid universe has NO model standing — say that "
@@ -53,26 +51,6 @@ PORTFOLIO_SYSTEM = (
 )
 
 
-# The UI rounds for display (Math.round percentiles, toFixed(1) percents), and the
-# grounding guard matches exact ints / ±0.02 fractions — so each displayed phrasing
-# needs a citable twin in the context (the prob_pct trick from assist.qa). abs()
-# because prose says "down 24.4%", and the UI's − is U+2212, which the number
-# extractor reads as positive anyway.
-
-def _jsround(x) -> int:
-    """JS ``Math.round`` (half-up) of ``abs(x)`` — what pctCell / the % bars show."""
-    return int(math.floor(abs(float(x)) + 0.5))
-
-
-def _pct1(x) -> float:
-    """1-decimal display twin of ``abs(x)`` — what ``sign()`` / toFixed(1) shows."""
-    return round(abs(float(x)), 1)
-
-
-def _num(x) -> bool:
-    return isinstance(x, (int, float)) and not isinstance(x, bool)
-
-
 def build_book_context(sc: dict) -> dict:
     """The grounding context for the book chat: the scorecard dict widened with
     display-rounded citable twins and number-free honesty notes.
@@ -80,8 +58,8 @@ def build_book_context(sc: dict) -> dict:
     Pure and non-mutating — ``sc`` and its nested rows are copied, never touched.
     Every number the book tab can show must trace: rounded percentile twins
     (``percentile_equal_round``), 1-dp P/L-percent twins, per-bucket concentration
-    percents, per-holding ``dprob_pct``, and the flagged-value sum the UI prints
-    (``value_at_risk``) — code owns the numbers, the model only frames them."""
+    percents, per-holding risk probability percents, and the flagged-value sums the UI
+    prints (``value_at_risk``) — code owns the numbers, the model only frames them."""
     ctx = dict(sc)
     ctx["note"] = (
         "a same-day peer-rank snapshot of the names the user tracks — the model makes "
@@ -104,18 +82,23 @@ def build_book_context(sc: dict) -> dict:
             row["unrealized_pl_pct_round"] = _pct1(row["unrealized_pl_pct"])
         if _num(row.get("dprob")):
             row["dprob_pct"] = _pct1(row["dprob"] * 100)
+        if _num(row.get("wprob")):
+            row["wprob_pct"] = _pct1(row["wprob"] * 100)
         holdings.append(row)
     ctx["holdings"] = holdings
 
-    dist = sc.get("distress")
-    if isinstance(dist, dict):
-        d = dict(dist)
+    for key, label in (("distress", "distress / delist"),
+                       ("drawdown", "large drawdown")):
+        risk = sc.get(key)
+        if not isinstance(risk, dict):
+            continue
+        d = dict(risk)
         val = d.get("value")
         if isinstance(val, dict):
             d["value_at_risk"] = (val.get("high") or 0.0) + (val.get("elevated") or 0.0)
-        d["note"] = ("learned distress flags on individual names — display-only risk "
+        d["note"] = (f"learned {label} flags on individual names — display-only risk "
                      "exposure, never a trade input and never a portfolio forecast")
-        ctx["distress"] = d
+        ctx[key] = d
 
     for key in ("industry_concentration", "sector_concentration"):
         buckets = []

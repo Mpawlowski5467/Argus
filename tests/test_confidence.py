@@ -27,10 +27,11 @@ def cal(hit_rate: float, decile: int = 10, n: int = 1000) -> dict:
     }}}
 
 
-def score(hit_rate=0.60, decile=10, percentile=95, drivers=None, flags=None, n=1000):
+def score(hit_rate=0.60, decile=10, percentile=95, drivers=None, flags=None, n=1000,
+          downside=None):
     return score_confidence(
         decile, percentile, COHERENT if drivers is None else drivers,
-        CLEAN if flags is None else flags, cal(hit_rate, decile, n),
+        CLEAN if flags is None else flags, cal(hit_rate, decile, n), downside,
     )
 
 
@@ -84,6 +85,16 @@ def test_data_quality_penalties_lower_it():
     assert score(flags={"in_sample": True})["score"] < base
 
 
+def test_downside_risk_penalties_lower_confidence_without_erasing_track_record():
+    base = score(hit_rate=0.56)
+    elevated = score(hit_rate=0.56, downside={"drawdown": {"flag": "elevated", "prob": 0.56}})
+    high = score(hit_rate=0.56, downside={"drawdown": {"flag": "high", "prob": 0.72}})
+
+    assert base["score"] > elevated["score"] > high["score"]
+    assert high["hit_rate"] == base["hit_rate"] and high["n"] == base["n"]
+    assert high["components"]["downside_risk"] < elevated["components"]["downside_risk"] < 1.0
+
+
 def test_incoherent_drivers_lower_it():
     aligned = score(drivers=[{"contribution": 0.10}, {"contribution": 0.08}])
     cancel = score(drivers=[{"contribution": 0.10}, {"contribution": -0.09}])
@@ -103,7 +114,9 @@ def test_hit_rate_and_n_pass_through():
     s = score(hit_rate=0.58, n=1234)
     assert s["hit_rate"] == 0.58 and s["n"] == 1234
     assert 0 <= s["score"] <= CEILING
-    assert set(s["components"]) == {"edge", "conviction_base", "margin", "data_quality", "coherence"}
+    assert set(s["components"]) == {
+        "edge", "conviction_base", "margin", "data_quality", "coherence", "downside_risk"
+    }
 
 
 # --- artifact I/O ---------------------------------------------------------------

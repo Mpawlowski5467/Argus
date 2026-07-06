@@ -9,7 +9,7 @@ AFTER scoring, so nothing here can move the signal.
 
 from __future__ import annotations
 
-from .core import grounded_answer
+from .core import grounded_answer, isnum, pct1
 
 QA_SYSTEM = (
     "You are a careful equity fundamentals analyst answering questions about ONE "
@@ -65,14 +65,15 @@ CHAT_SYSTEM = QA_SYSTEM + (
 def _rounded(block: dict | None, pct_fields: dict[str, str]) -> dict | None:
     """Copy ``block`` adding display-rounded percentage twins (``prob`` 0.034 →
     ``prob_pct`` 3.4) so the phrasing the UI shows is citable under the grounding
-    guard's exact-integer / ±0.02-fraction matching."""
+    guard's exact-integer / ±0.02-fraction matching (core.pct1, shared with the
+    book context builder)."""
     if not block:
         return None
     out = dict(block)
     for src, dst in pct_fields.items():
         v = out.get(src)
-        if isinstance(v, (int, float)):
-            out[dst] = round(abs(float(v)) * 100, 1)
+        if isnum(v):
+            out[dst] = pct1(v * 100)
     return out
 
 

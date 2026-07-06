@@ -205,6 +205,12 @@ def watch():
     return convert.jsonable(_facade().watch())
 
 
+@router.get("/watch-ids")
+def watch_ids():
+    """Just the watched CIKs — cheap payload for the scan page's star column."""
+    return {"ciks": convert.jsonable(_safe(lambda: _facade().watched_ciks(), []))}
+
+
 @router.get("/watch/{cik}")
 def is_watched(cik: int):
     return {"cik": cik, "watched": bool(_facade().is_watched(cik))}
@@ -315,6 +321,30 @@ def ask(cik: int, body: dict):
             return convert.jsonable(a.ask(cik, question, history=history))
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc))
+    finally:
+        _LLM_GATE.release()
+
+
+# -- overnight digest (deterministic card; grounded LLM brief on demand) ------
+@router.get("/digest")
+def digest():
+    """Last night's ops record: job statuses, unseen alerts, paper progress —
+    the number-true card payload. The LLM prose is the POST (slow, optional)."""
+    a = _facade()
+    return convert.jsonable(_safe(lambda: a.digest(), {}))
+
+
+@router.post("/digest")
+def digest_brief():
+    """The grounded morning brief (assist.brief) over the SAME context the card
+    shows — uses only numbers in that record or refuses. Single-flight like ask."""
+    a = _facade()
+    if not _LLM_GATE.acquire(blocking=False):
+        return {"busy": True}
+    try:
+        return convert.jsonable(_safe(
+            lambda: a.digest_brief(),
+            {"answer": "", "grounded": True, "refused": True, "violations": []}))
     finally:
         _LLM_GATE.release()
 
