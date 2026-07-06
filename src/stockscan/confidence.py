@@ -134,7 +134,19 @@ def score_confidence(
         return None
 
     hit_rate = float(stats["hit_rate"])
-    edge = abs(hit_rate - 0.5)
+    # Directional, not absolute: a BUY-side decile is convincing only when names in
+    # that decile beat the cross-section more than half the time; an AVOID-side
+    # decile is convincing only when they beat it less than half the time. HOLD
+    # deciles deliberately earn no directional confidence — the model has no strong
+    # call there. Using ``abs(hit_rate - 0.5)`` would falsely award confidence to a
+    # top-decile BUY bucket whose hit-rate is below 50%.
+    d = int(decile)
+    if d >= 8:
+        edge = max(0.0, hit_rate - 0.5)
+    elif d <= 4:
+        edge = max(0.0, 0.5 - hit_rate)
+    else:
+        edge = 0.0
     conviction_base = max(0.0, min(1.0, edge / EDGE_FULL))
     margin = _margin_factor(percentile)
     data_quality = _data_quality_factor(flags)
@@ -148,7 +160,7 @@ def score_confidence(
         "hit_rate": round(hit_rate, 4),
         "n": int(stats.get("n", 0)),
         "ci": [stats.get("ci_low"), stats.get("ci_high")],
-        "decile": int(decile),
+        "decile": d,
         "components": {
             "edge": round(edge, 4),
             "conviction_base": round(conviction_base, 4),

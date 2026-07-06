@@ -162,3 +162,20 @@ MONITOR_PCTILE_ALERT = 10
 # unanswered this long (FSDS publishes in the weeks after quarter end).
 HEALTH_PRICE_STALE_DAYS = 6
 HEALTH_FSDS_GRACE_DAYS = 100
+# Every frozen head (return model, distress, drawdown, confidence calibration)
+# carries a trained_through; past this age the health check warns that the freeze
+# is aging — frozen-by-design is not frozen-forever, and the number would keep
+# displaying authoritatively while its OOS anchor drifts.
+HEALTH_HEAD_STALE_DAYS = 400
+# The local web UI, probed by the health check (info-level: not running is fine).
+WEB_URL = os.environ.get("STOCKSCAN_WEB_URL", "http://127.0.0.1:8000")
+
+# --- housekeeping: backups + log rotation (nightly) ------------------------------
+# The SQLite stores under artifacts/ hold the only irreplaceable personal state
+# (positions, watchlist, alerts, job history) plus quota-expensive caches (news,
+# profiles). A nightly online .backup into a dated folder makes losing them a
+# one-day event instead of a total loss. Point STOCKSCAN_BACKUPS_DIR at a synced
+# folder (iCloud/Dropbox) for an off-machine copy.
+BACKUPS_DIR = Path(os.environ.get("STOCKSCAN_BACKUPS_DIR", ARTIFACTS_DIR / "backups"))
+BACKUP_KEEP_DAYS = 14                 # dated backup folders retained
+LOG_ROTATE_MB = 10                    # copy-truncate a log past this size (one .1 kept)

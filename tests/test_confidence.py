@@ -20,14 +20,14 @@ CLEAN = {"liquidity_pass": True, "in_sample": False, "staleness_days": 100}
 COHERENT = [{"contribution": 0.10}, {"contribution": 0.05}]
 
 
-def cal(hit_rate: float, decile: int = 7, n: int = 1000) -> dict:
+def cal(hit_rate: float, decile: int = 10, n: int = 1000) -> dict:
     return {"deciles": {str(decile): {
         "hit_rate": hit_rate, "mean_excess": 0.0, "n": n,
         "ci_low": max(0.0, hit_rate - 0.01), "ci_high": min(1.0, hit_rate + 0.01),
     }}}
 
 
-def score(hit_rate=0.60, decile=7, percentile=95, drivers=None, flags=None, n=1000):
+def score(hit_rate=0.60, decile=10, percentile=95, drivers=None, flags=None, n=1000):
     return score_confidence(
         decile, percentile, COHERENT if drivers is None else drivers,
         CLEAN if flags is None else flags, cal(hit_rate, decile, n),
@@ -44,7 +44,7 @@ def test_none_without_calibration_or_missing_decile():
 
 # --- edge-anchored + capped -----------------------------------------------------
 
-def test_bigger_directional_edge_scores_higher():
+def test_bigger_buy_side_directional_edge_scores_higher():
     strong = score(hit_rate=0.60)        # edge 0.10
     weak = score(hit_rate=0.52)          # edge 0.02
     flat = score(hit_rate=0.50)          # edge 0 -> no conviction
@@ -57,6 +57,16 @@ def test_avoid_side_edge_is_symmetric():
     buy = score(hit_rate=0.60, decile=10, percentile=95)
     avoid = score(hit_rate=0.40, decile=1, percentile=5)
     assert buy["score"] == avoid["score"]        # |0.60-0.5| == |0.40-0.5|
+
+
+def test_wrong_direction_hit_rate_gets_no_confidence():
+    """A high decile below 50% hit-rate, or a low decile above 50%, is not convincing."""
+    assert score(hit_rate=0.48, decile=10, percentile=95)["score"] == 0
+    assert score(hit_rate=0.52, decile=1, percentile=5)["score"] == 0
+
+
+def test_hold_deciles_get_no_directional_confidence():
+    assert score(hit_rate=0.60, decile=6, percentile=60)["score"] == 0
 
 
 def test_never_exceeds_ceiling():
@@ -107,4 +117,4 @@ def test_optional_loader_returns_none_when_absent(tmp_path):
 def test_load_calibration_roundtrip(tmp_path):
     p = tmp_path / "calibration.json"
     p.write_text(json.dumps(cal(0.6)))
-    assert load_calibration(p)["deciles"]["7"]["hit_rate"] == 0.6
+    assert load_calibration(p)["deciles"]["10"]["hit_rate"] == 0.6

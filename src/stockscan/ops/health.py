@@ -19,12 +19,23 @@ import pandas as pd
 from ..config import (
     ARTIFACTS_DIR,
     HEALTH_FSDS_GRACE_DAYS,
+    HEALTH_HEAD_STALE_DAYS,
     HEALTH_PRICE_STALE_DAYS,
     LLM_BASE_URL,
     OPS_STATE_PATH,
     PAPER_DIR,
+    WEB_URL,
 )
 from ..prices import PRICES_DIR
+
+# Every frozen head that carries a trained_through in its on-disk meta. Optional
+# heads that aren't built simply don't appear in the staleness check.
+_HEAD_METAS = (
+    ("model", "model/meta.json"),
+    ("distress", "distress_model/meta.json"),
+    ("drawdown", "drawdown_model/meta.json"),
+    ("confidence_cal", "confidence_cal/calibration.json"),
+)
 
 
 @dataclass
@@ -38,6 +49,40 @@ class Check:
 def _quarter_end(quarter: str) -> pd.Timestamp:
     y, q = int(quarter[:4]), int(quarter[-1])
     return pd.Timestamp(year=y, month=3 * q, day=1) + pd.offsets.MonthEnd(0)
+
+
+def head_staleness(today, artifacts_dir: Path = None,
+                   stale_days: int = HEALTH_HEAD_STALE_DAYS) -> Check | None:
+    """One warn-level check over every frozen head's ``trained_through`` age.
+
+    Each head keeps displaying its number with authority while its training
+    anchor quietly ages — frozen-by-design is not frozen-forever. Heads that
+    aren't built are simply absent; None when nothing carries a date at all."""
+    base = Path(artifacts_dir) if artifacts_dir is not None else ARTIFACTS_DIR
+    t = pd.Timestamp(today)
+    ages, stale = [], []
+    for name, rel in _HEAD_METAS:
+        p = base / rel
+        if not p.exists():
+            continue
+        try:
+            tt = json.loads(p.read_text()).get("trained_through")
+        except (OSError, json.JSONDecodeError):
+            stale.append(f"{name}: meta unreadable")
+            continue
+        if not tt:
+            continue
+        age = (t.normalize() - pd.Timestamp(tt).normalize()).days
+        ages.append(f"{name} {age}d")
+        if age > stale_days:
+            stale.append(f"{name} trained through {tt} ({age}d ago)")
+    if not ages and not stale:
+        return None
+    return Check(
+        "warn", "head_staleness", not stale,
+        ("all heads inside the freshness window: " + ", ".join(ages)) if not stale
+        else "; ".join(stale) + f" — stale past {stale_days}d; re-freeze "
+        f"deliberately (paper retrain-record) or accept the drift")
 
 
 def run_checks(today=None, prices_dir: Path = PRICES_DIR) -> list[Check]:
@@ -151,6 +196,24 @@ def run_checks(today=None, prices_dir: Path = PRICES_DIR) -> list[Check]:
         checks.append(Check("warn", "narration_cache", True, "openable"))
     except sqlite3.Error as exc:
         checks.append(Check("warn", "narration_cache", False, str(exc)))
+
+    staleness = head_staleness(t)
+    if staleness is not None:
+        checks.append(staleness)
+
+    # web UI (informational — a personal tool's server may simply not be running)
+    try:
+        import httpx
+
+        r = httpx.get(WEB_URL.rstrip("/") + "/api/status", timeout=2.0)
+        argus = r.status_code in (200, 503)   # 503 = still loading, still argus
+        checks.append(Check("info", "web_ui", argus,
+                            f"{WEB_URL} up (status {r.status_code})" if argus else
+                            f"{WEB_URL} answers but not argus (status {r.status_code}) — "
+                            f"another service on the port, or set STOCKSCAN_WEB_URL"))
+    except Exception:
+        checks.append(Check("info", "web_ui", True,
+                            f"{WEB_URL} not running (fine unless you expect it up)"))
 
     # LLM endpoint (informational — template fallback is by design)
     try:

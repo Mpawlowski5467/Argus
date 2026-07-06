@@ -13,6 +13,7 @@
   uv run python scripts/ops.py paper freeze | log | compare
   uv run python scripts/ops.py paper retrain-record --reason "quarterly retrain 2026q3"
   uv run python scripts/ops.py health
+  uv run python scripts/ops.py backup              # snapshot the sqlite stores now
   uv run python scripts/ops.py digest              # overnight brief (local model, grounded)
   uv run python scripts/ops.py install-launchd [--dry-run] [--uninstall]
 
@@ -189,6 +190,14 @@ def job_themes(state: OpsState) -> dict:
     return _run_logged(state, "themes", _build)
 
 
+def job_backup(state: OpsState) -> dict:
+    """SQLite-store backups + log rotation (see ops/housekeeping.py)."""
+    from stockscan.ops.housekeeping import backup_stores, rotate_logs
+
+    _run_logged(state, "rotate_logs", rotate_logs)
+    return _run_logged(state, "backup", backup_stores)
+
+
 def job_monitor(state: OpsState, no_llm: bool = False, edgar: bool = True,
                 alerts_ok: bool = True) -> dict:
     from stockscan.narrate.llm import LocalLLM
@@ -237,6 +246,8 @@ def job_nightly(state: OpsState, no_llm: bool = False) -> int:
     # theme tags are firewalled + description-cached (re-tag is cheap after the first
     # build); refresh so new/changed names flow into the markets page's AI/SaaS/EV groups
     job_themes(state)
+    # housekeeping last: snapshot the stores AFTER tonight's writes, rotate fat logs
+    job_backup(state)
     run_id = state.job_start("nightly")
     state.job_finish(run_id, "degraded" if degraded else "ok",
                      {"prices_failed_frac": round(deltas.get("failed", 0) / checked, 4),
@@ -328,6 +339,7 @@ def main(argv=None) -> int:
     p.add_argument("--reason", default="", help="(retrain-record) why the retrain")
 
     sub.add_parser("health")
+    sub.add_parser("backup")
     sub.add_parser("digest")
     p = sub.add_parser("install-launchd")
     p.add_argument("--dry-run", action="store_true")
@@ -371,6 +383,8 @@ def main(argv=None) -> int:
                     job_news(state, no_llm=args.no_llm)
                 elif args.cmd == "themes":
                     job_themes(state)
+                elif args.cmd == "backup":
+                    job_backup(state)
                 elif args.cmd == "nightly":
                     return job_nightly(state, no_llm=args.no_llm)
                 elif args.cmd == "watch":

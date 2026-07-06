@@ -42,7 +42,7 @@ describe the SAME model the serve path scores with.
 Anchored on the decile's **directional edge**, then bounded-adjusted:
 
 ```
-edge            = |hit_rate(decile) - 0.5|        # strength of the model's view at this decile
+edge            = directional hit-rate edge        # BUY: max(hit_rate-0.5,0); AVOID: max(0.5-hit_rate,0); HOLD: 0
 conviction_base = clip(edge / EDGE_FULL, 0, 1)    # EDGE_FULL = 0.10  → a 60/40 decile = full base
 score = 100 * conviction_base * margin * data_quality * coherence   # each modifier in [~0.7, 1.0]
 score = min(score, CEILING)                        # CEILING = 85 — never imply certainty
