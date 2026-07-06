@@ -18,6 +18,19 @@ from ..narrate.ground import check_grounding
 REFUSAL = ("I can't answer that from the available data without guessing — the numbers "
            "you'd need aren't in what I was given.")
 
+# Appended to EVERY surface's system prompt (qa / chat / book / brief / move) so no
+# single prompt can forget it — this is the one place the grounding contract lives.
+# Every grounding context here carries ISO dates (period_end, as_of, added_at, news
+# dates, job timestamps); the guard strips well-formed dates before checking numbers,
+# but a REWORDED date ("2026-07-01" → "July 1st" or "07/01/2026") can leak a bare
+# day-number as a fabricated figure and trigger a spurious retry-then-refusal. Keeping
+# dates verbatim closes that off at the source, before the guard's safety net.
+_DATE_RULE = (
+    "\n- Write every date EXACTLY as it appears in the context (ISO YYYY-MM-DD). Never "
+    "reformat, shorten, spell out, or re-order a date — a reworded date reads as an "
+    "invented number to the grounding check and your answer will be rejected."
+)
+
 
 # --- display-rounding twins (shared by the chat context builders) -----------------
 # The UI rounds for display (Math.round percentiles, toFixed(1) percents) and the
@@ -48,6 +61,7 @@ def grounded_answer(context: dict, question: str, llm, system: str,
     ``context``; otherwise the reply is rejected (retry, then refusal). ``history``
     is an optional list of prior ``{role, content}`` turns woven into the prompt so a
     conversation stays coherent without ever expanding the grounding domain."""
+    system = system + _DATE_RULE
     ctx_json = json.dumps(context, indent=2, default=str, sort_keys=True)
     convo = ""
     for turn in (history or []):

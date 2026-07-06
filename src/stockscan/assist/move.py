@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 
+from ..horizons import BY_KEY as _HORIZON
 from .core import grounded_answer, isnum as _num, pct1 as _pct1
 
 MOVE_SYSTEM = (
@@ -30,9 +31,6 @@ MOVE_SYSTEM = (
     "- Use ONLY numbers that appear in the context (the move's chg_pct, the last "
     "close, dates). Never invent, estimate, or compute figures. News takeaways are "
     "deliberately number-free — describe them in words.\n"
-    "- Write any date EXACTLY as it appears in the context (YYYY-MM-DD). Never "
-    "reformat, shorten, or spell a date out — a reworded date reads as an "
-    "invented number and your answer will be rejected.\n"
     "- COINCIDENCE IS NOT CAUSE: the news and filings in the context merely fell "
     "inside the move's window. Say an item 'coincided with' or 'landed during' the "
     "move; NEVER present it as the reason — no 'because of', 'driven by', 'on the "
@@ -49,14 +47,12 @@ MOVE_SYSTEM = (
 )
 
 # horizon -> the price_summary field suffix, a plain-English window, and the
-# calendar-day lookback used to keep only COINCIDING news/filings (trading days
-# ~5/21/63/252 plus weekend/holiday slack — generous, never tight)
+# calendar-day lookback (``days``) used to keep only COINCIDING news/filings — the
+# trading-day and calendar-day spans are pinned together in the shared horizon table
+# (``stockscan.horizons``) so this window can't drift from the chip's price lookback.
 HORIZONS: dict[str, dict] = {
-    "1w": {"label": "one-week", "days": 10, "window": "the last week of trading"},
-    "1m": {"label": "one-month", "days": 38, "window": "the last month of trading"},
-    "3m": {"label": "three-month", "days": 100,
-           "window": "the last three months of trading"},
-    "1y": {"label": "one-year", "days": 372, "window": "the last year of trading"},
+    k: {"label": h.label, "days": h.calendar_days, "window": h.window}
+    for k, h in _HORIZON.items()
 }
 
 _QUESTION = ("Explain this {label} move: state it, then what reported news or "

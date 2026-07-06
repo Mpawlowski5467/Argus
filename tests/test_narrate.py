@@ -7,6 +7,7 @@ import pandas as pd
 from stockscan.features import FEATURES
 from stockscan.narrate.ground import is_grounded
 from stockscan.narrate.narrator import (
+    SYSTEM,
     expected_directions,
     narrate,
     narrate_packet,
@@ -72,6 +73,13 @@ def test_narrate_accepts_cited_json_output():
     assert r["source"] == "llm"
     assert r["grounded"] and r["first_pass_ok"] and r["attempts"] == 1
     assert r["citations"]
+
+
+def test_narrator_system_carries_the_iso_date_rule():
+    """Narration runs its OWN loop (not core.grounded_answer), so it can't inherit
+    _DATE_RULE — the keep-dates-verbatim instruction must live in SYSTEM directly,
+    or a reworded date leaks a day-number to the same guard and drops to template."""
+    assert "YYYY-MM-DD" in SYSTEM and "reworded date" in SYSTEM
 
 
 def test_narrate_falls_back_on_hallucinated_number():

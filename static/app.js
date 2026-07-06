@@ -480,6 +480,8 @@
           if (v == null) return "<span>" + inner + "</span>";
           return '<span class="mvchip" data-h="' + k + '" title="explain this move — what coincided with it (grounded; not a cause, not a forecast)">' + inner + "</span>";
         };
+        // chip keys mirror the shared horizon table (src/stockscan/horizons.py);
+        // keep this set/order in sync — tests/test_horizons.py pins it.
         h += '<div class="price-line"><span class="last"><b>' + Number(s.last).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + "</b></span>" +
           chip("1w", s.chg_1w) + chip("1m", s.chg_1m) + chip("3m", s.chg_3m) + chip("1y", s.chg_1y) +
           '<span class="muted">close · 52wk ' + Math.round(s.lo_52w) + "–" + Math.round(s.hi_52w) + adv + "</span></div>";

@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import math
 
+from ..horizons import HORIZONS as _HORIZONS
+
 
 def _finite(values) -> list[float]:
     out = []
@@ -33,15 +35,17 @@ def price_summary(series, adv: float | None = None) -> dict:
     """Last price, trailing % changes, and the 52-week range from a close Series.
 
     ``series`` is a pandas Series (date-indexed) or any ordered sequence; NaNs are
-    dropped. ~252 trading days ≈ 1 year, 63 ≈ 3 months, 21 ≈ 1 month.
+    dropped. The trailing-change set and each window's lookback come from the shared
+    horizon table (``stockscan.horizons``): ~252 trading days ≈ 1 year, 63 ≈ 3
+    months, 21 ≈ 1 month, 5 ≈ 1 week.
     """
     try:
         vals = _finite(series.tolist())  # pandas Series
     except AttributeError:
         vals = _finite(list(series))
     if not vals:
-        return {"last": None, "chg_1w": None, "chg_1m": None, "chg_3m": None,
-                "chg_1y": None, "hi_52w": None, "lo_52w": None, "adv": adv, "n": 0}
+        return {"last": None, **{f"chg_{h.key}": None for h in _HORIZONS},
+                "hi_52w": None, "lo_52w": None, "adv": adv, "n": 0}
     last = vals[-1]
     yr = vals[-252:] if len(vals) >= 2 else vals
 
@@ -50,10 +54,7 @@ def price_summary(series, adv: float | None = None) -> dict:
 
     return {
         "last": last,
-        "chg_1w": _pct(last, back(5)),
-        "chg_1m": _pct(last, back(21)),
-        "chg_3m": _pct(last, back(63)),
-        "chg_1y": _pct(last, back(252)),
+        **{f"chg_{h.key}": _pct(last, back(h.trading_days)) for h in _HORIZONS},
         "hi_52w": max(yr),
         "lo_52w": min(yr),
         "adv": adv,

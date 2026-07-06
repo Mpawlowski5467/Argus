@@ -106,7 +106,9 @@ def test_unknown_horizon_raises():
 
 def test_clean_answer_passes_through():
     def llm(system, prompt):
-        assert "COINCIDENCE" in system and "12.3" in prompt
+        # the ISO-date rule now lives in core.grounded_answer (deduped from
+        # MOVE_SYSTEM) — it must still reach this surface's system prompt
+        assert "COINCIDENCE" in system and "YYYY-MM-DD" in system and "12.3" in prompt
         return ("AAA is up 12.3% over the last month of trading; reuters.com "
                 "reported a guidance cut dated 2026-07-01, which coincided with "
                 "the window.")
