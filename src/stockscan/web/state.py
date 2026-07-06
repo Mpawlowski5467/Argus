@@ -54,7 +54,9 @@ class AppState:
     def reload(self) -> None:
         """Full reload from disk — the ONLY way to pick up freshly-ingested prices/filings
         (``refresh`` just re-scores the already-loaded data). Reuses the startup loader UX:
-        flip to 'loading' and rebuild ArgusData in a background thread."""
+        flip to 'loading' and rebuild ArgusData in a background thread. The swap retires
+        every session cache on the old facade (analyze/news/profile/quote), so post-update
+        chat and narration can never answer from the stale cross-section."""
         with self.lock:
             self.status = "loading"
             self.error = None

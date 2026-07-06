@@ -267,6 +267,37 @@ def narrate(cik: int):
         return convert.jsonable(_safe(lambda: a.narrate(res["packet"]), {"narrative": "", "tier": "?"}))
 
 
+def _ask_input(body: dict) -> tuple[str, list]:
+    """Validate an ask body: a bounded question + the browser's cleaned history."""
+    question = str(body.get("question") or "").strip()
+    if not question:
+        raise HTTPException(status_code=422, detail="empty question")
+    if len(question) > 2000:
+        raise HTTPException(status_code=422, detail="question too long")
+    history = [t for t in (body.get("history") or [])
+               if isinstance(t, dict) and t.get("content")][-8:]
+    return question, history
+
+
+@router.post("/ask/book")
+def ask_book(body: dict):
+    """Grounded chat about the BOOK — the scorecard made interactive. Same contract
+    as /ask/{cik} one level up: answers come ONLY from the scorecard the tab shows
+    (widened with display-rounded citable twins), the grounding guard catches any
+    fabricated numeral, and the aggregate honesty rules (both weightings, snapshot
+    not outlook, no portfolio forecast, no advice) live in the system prompt
+    (assist.book.PORTFOLIO_SYSTEM). Registered BEFORE /ask/{cik} so the literal
+    path wins — the int-typed {cik} would 422 "book" without falling through."""
+    a = _facade()
+    question, history = _ask_input(body)
+    if not _LLM_GATE.acquire(blocking=False):
+        return {"busy": True}
+    try:
+        return convert.jsonable(a.ask_book(question, history=history))
+    finally:
+        _LLM_GATE.release()
+
+
 @router.post("/ask/{cik}")
 def ask(cik: int, body: dict):
     """Grounded chat about one name — the narration made interactive. Answers come
@@ -276,13 +307,7 @@ def ask(cik: int, body: dict):
     /narrate: everything is assembled AFTER scoring, nothing feeds back. History is
     the browser's (stateless server) and never expands the grounding domain."""
     a = _facade()
-    question = str(body.get("question") or "").strip()
-    if not question:
-        raise HTTPException(status_code=422, detail="empty question")
-    if len(question) > 2000:
-        raise HTTPException(status_code=422, detail="question too long")
-    history = [t for t in (body.get("history") or [])
-               if isinstance(t, dict) and t.get("content")][-8:]
+    question, history = _ask_input(body)
     if not _LLM_GATE.acquire(blocking=False):
         return {"busy": True}
     try:
