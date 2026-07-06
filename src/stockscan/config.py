@@ -59,6 +59,21 @@ INTRINIO_API_KEY = os.environ.get("STOCKSCAN_INTRINIO_KEY", "")
 LLM_BASE_URL = os.environ.get("STOCKSCAN_LLM_URL", "http://localhost:11434/v1")
 LLM_MODEL = os.environ.get("STOCKSCAN_LLM_MODEL", "gemma4:26b")
 LLM_LIGHT_MODEL = os.environ.get("STOCKSCAN_LLM_LIGHT", "phi4")
+# Interactive chat (ask / ask-book / digest brief) wants SHORT answers FAST, so it
+# gets its own knobs: an independent model choice (grounding makes a smaller model
+# safe — every numeral is checked either way) and a hard completion cap. Measured
+# on the M5 Pro: uncapped gemma4:26b wrote 2,839 tokens (~76s) to a one-line chat
+# question; capped at 500 the same turn bounds at ~15s warm. Narration stays on
+# LLM_MODEL, uncapped — its long read is the point.
+LLM_CHAT_MODEL = os.environ.get("STOCKSCAN_LLM_CHAT_MODEL", LLM_MODEL)
+LLM_CHAT_MAX_TOKENS = int(os.environ.get("STOCKSCAN_LLM_CHAT_MAX_TOKENS", "500"))
+LLM_CHAT_TIMEOUT = float(os.environ.get("STOCKSCAN_LLM_CHAT_TIMEOUT", "120"))
+# Thinking models burn hundreds of hidden reasoning tokens per turn — under the
+# chat cap that can consume the WHOLE budget and return empty content. Chat turns
+# reasoning off (Ollama honors reasoning_effort; other servers ignore it). Set
+# STOCKSCAN_LLM_CHAT_REASONING=high to trade latency for deliberation, or "" to
+# omit the field entirely.
+LLM_CHAT_REASONING = os.environ.get("STOCKSCAN_LLM_CHAT_REASONING", "none") or None
 
 # --- locked modeling decisions (DESIGN.md §10) --------------------------------
 LABEL_HORIZON_DAYS = 63           # forward return horizon (~3 months)

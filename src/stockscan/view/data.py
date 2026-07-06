@@ -455,6 +455,23 @@ class ArgusData:
             res["tier"] += "+news"
         return res
 
+    @staticmethod
+    def _chat_llm():
+        """The interactive-chat client: independently swappable model, hard token
+        cap, short timeout (config LLM_CHAT_*). Grounding checks every numeral no
+        matter the model, so a smaller/faster one loses polish, not honesty."""
+        from ..config import (
+            LLM_CHAT_MAX_TOKENS,
+            LLM_CHAT_MODEL,
+            LLM_CHAT_REASONING,
+            LLM_CHAT_TIMEOUT,
+        )
+        from ..narrate.llm import LocalLLM
+
+        return LocalLLM(model=LLM_CHAT_MODEL, timeout=LLM_CHAT_TIMEOUT,
+                        max_tokens=LLM_CHAT_MAX_TOKENS,
+                        reasoning_effort=LLM_CHAT_REASONING)
+
     def ask(self, cik: int, question: str, history: list | None = None, llm=None) -> dict:
         """Grounded chat about ONE name — the narration made interactive (web 'ask' box).
 
@@ -466,7 +483,6 @@ class ArgusData:
         never a guess, never advice. ``history`` rides in from the browser (the
         server stays stateless) and never expands the grounding domain."""
         from ..assist.qa import answer_about_company
-        from ..narrate.llm import LocalLLM
         from ..narrate.packet import news_context
         from .chart import verdict as call_verdict
 
@@ -477,9 +493,8 @@ class ArgusData:
             packet["context"] = {**(packet.get("context") or {}), "news": ctx}
         res["packet"] = packet
         pr = self.price(int(cik))
-        # a chat turn should feel conversational, not narration-length: shorter timeout
         r = answer_about_company(
-            res, question, llm or LocalLLM(timeout=180.0), history=history,
+            res, question, llm or self._chat_llm(), history=history,
             price_summary=(pr or {}).get("summary"),
             verdict=call_verdict((res.get("percentile") or 0) / 100.0))
         m = packet.get("meta") or {}
@@ -496,10 +511,9 @@ class ArgusData:
         forecast, never advice. ``history`` rides in from the browser (the server
         stays stateless) and never expands the grounding domain."""
         from ..assist.book import answer_about_book
-        from ..narrate.llm import LocalLLM
 
         sc = self.scorecard()
-        r = answer_about_book(sc, question, llm or LocalLLM(timeout=180.0),
+        r = answer_about_book(sc, question, llm or self._chat_llm(),
                               history=history)
         return {**r, "n_names": sc.get("n_total", 0), "as_of": sc.get("as_of")}
 
@@ -525,9 +539,8 @@ class ArgusData:
     def digest_brief(self, llm=None) -> dict:
         """The grounded LLM morning brief over :meth:`digest` (refuses over inventing)."""
         from ..assist.brief import nightly_brief
-        from ..narrate.llm import LocalLLM
 
-        return nightly_brief(self.digest(), llm or LocalLLM(timeout=180.0))
+        return nightly_brief(self.digest(), llm or self._chat_llm())
 
     def watched_ciks(self) -> list[int]:
         """Just the watched CIKs — the scan page's star column wants a cheap set,

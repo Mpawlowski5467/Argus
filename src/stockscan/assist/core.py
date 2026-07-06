@@ -71,9 +71,15 @@ def grounded_answer(context: dict, question: str, llm, system: str,
             # but leaked a number), not for transport.
             log.append([f"llm-error:{type(exc).__name__}"])
             break
-        leaks = check_grounding(text or "", context)
+        if not (text or "").strip():
+            # a capped thinking model can burn the whole token budget on hidden
+            # reasoning and return empty content — retry (cheap to detect, may be
+            # transient), then refuse honestly; never show a silent blank answer
+            log.append(["empty-response"])
+            continue
+        leaks = check_grounding(text, context)
         if not leaks:
-            return {"answer": (text or "").strip(), "grounded": True,
+            return {"answer": text.strip(), "grounded": True,
                     "violations": [], "attempts": attempt + 1, "refused": False}
         log.append(leaks)
     return {"answer": REFUSAL, "grounded": True, "violations": log[-1] if log else [],
