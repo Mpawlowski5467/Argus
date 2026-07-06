@@ -14,6 +14,7 @@ price history) is measured, not hidden. See DESIGN.md.
 
 from __future__ import annotations
 
+import numpy as np
 import pandas as pd
 
 from .config import DELISTING_RETURN, LABEL_HORIZON_DAYS, MAX_STALE_DAYS, MIN_SECTOR_BUCKET
@@ -27,6 +28,7 @@ from .sector import sic_division
 # matrix, NOT carried on the filing row like FEATURES. Point-in-time and
 # survivorship-free by construction (only past closes; dead names keep their column).
 PRICE_FEATURES = ["mom_12_1", "mom_6_1"]
+EXTRA_PRICE_FEATURES = ["st_rev", "low_vol", "amihud"]
 
 # Imputed terminal return by ledger reason, sourced from the locked config decision
 # (DESIGN.md §10): Form 15 deregistration ("dereg") = going-dark -> -1.00; Form 25/25-NSE
@@ -104,9 +106,31 @@ def add_sector_ranks(
     return out
 
 
-def price_feature_matrices(close: pd.DataFrame) -> dict[str, pd.DataFrame]:
+def price_feature_matrices(
+    close: pd.DataFrame,
+    dollar_volume: pd.DataFrame | None = None,
+    features: list[str] | None = None,
+) -> dict[str, pd.DataFrame]:
     """Wide [date x ticker] matrix per price feature, computed once for the whole run."""
-    return {"mom_12_1": momentum_12_1(close), "mom_6_1": momentum_6_1(close)}
+    features = features or PRICE_FEATURES
+    ret = close.pct_change()
+    mats: dict[str, pd.DataFrame] = {}
+    for f in features:
+        if f == "mom_12_1":
+            mats[f] = momentum_12_1(close)
+        elif f == "mom_6_1":
+            mats[f] = momentum_6_1(close)
+        elif f == "st_rev":
+            mats[f] = close / close.shift(21) - 1.0
+        elif f == "low_vol":
+            mats[f] = -ret.rolling(126, min_periods=63).std()
+        elif f == "amihud":
+            if dollar_volume is None:
+                raise ValueError("amihud price feature requires dollar_volume")
+            mats[f] = (ret.abs() / dollar_volume.replace(0, np.nan)).rolling(21, min_periods=10).mean()
+        else:
+            raise ValueError(f"unknown price feature: {f}")
+    return mats
 
 
 def attach_price_features(
@@ -137,6 +161,7 @@ def build_fundamental_panel(
     min_names: int = 30,
     reason_return: dict | None = None,
     dollar_volume: pd.DataFrame | None = None,
+    liquidity_price: pd.DataFrame | None = None,
     min_dollar_volume: float | None = None,
     min_price: float = 1.0,
     winsorize: tuple[float, float] | None = None,
@@ -145,8 +170,15 @@ def build_fundamental_panel(
     reason_return = reason_return or REASON_RETURN
     c2t = ticker_map if ticker_map is not None else cik_to_ticker()
     # Price features attach as-of each rebalance date; matrices built once up front.
-    rank_features = FEATURES + PRICE_FEATURES if price_features else FEATURES
-    mom_mats = price_feature_matrices(close) if price_features else None
+    if isinstance(price_features, (list, tuple)):
+        price_feature_names = list(price_features)
+    elif price_features:
+        price_feature_names = PRICE_FEATURES
+    else:
+        price_feature_names = []
+    rank_features = FEATURES + price_feature_names
+    mom_mats = price_feature_matrices(close, dollar_volume, price_feature_names) \
+        if price_feature_names else None
     dmap = {}
     if delistings is not None and len(delistings):
         for cik, dd, reason in zip(delistings["cik"], delistings["delist_date"], delistings["reason"]):
@@ -160,6 +192,7 @@ def build_fundamental_panel(
     fwd = forward_return_to_last(close, horizon)
     idx = close.index
     dv_med = dollar_volume.rolling(20, min_periods=10).median() if dollar_volume is not None else None
+    liq_price = liquidity_price if liquidity_price is not None else close
 
     rows, coverage = [], []
     for d in month_end_dates(close.index):
@@ -192,7 +225,7 @@ def build_fundamental_panel(
         # Liquidity filter: keep imputed failures (their missing price is a data gap, not an
         # illiquidity signal) plus priced names clearing the dollar-volume and price floors.
         if dv_med is not None and min_dollar_volume:
-            liquid = liquidity_mask(latest, d, close, dv_med, min_dollar_volume, min_price)
+            liquid = liquidity_mask(latest, d, liq_price, dv_med, min_dollar_volume, min_price)
             latest = latest[latest["imputed"] | liquid]
 
         # Price features attach as-of d (a month-end trading day in close.index),

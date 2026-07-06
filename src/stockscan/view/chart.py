@@ -40,8 +40,8 @@ def price_summary(series, adv: float | None = None) -> dict:
     except AttributeError:
         vals = _finite(list(series))
     if not vals:
-        return {"last": None, "chg_1m": None, "chg_3m": None, "chg_1y": None,
-                "hi_52w": None, "lo_52w": None, "adv": adv, "n": 0}
+        return {"last": None, "chg_1w": None, "chg_1m": None, "chg_3m": None,
+                "chg_1y": None, "hi_52w": None, "lo_52w": None, "adv": adv, "n": 0}
     last = vals[-1]
     yr = vals[-252:] if len(vals) >= 2 else vals
 
@@ -50,6 +50,7 @@ def price_summary(series, adv: float | None = None) -> dict:
 
     return {
         "last": last,
+        "chg_1w": _pct(last, back(5)),
         "chg_1m": _pct(last, back(21)),
         "chg_3m": _pct(last, back(63)),
         "chg_1y": _pct(last, back(252)),

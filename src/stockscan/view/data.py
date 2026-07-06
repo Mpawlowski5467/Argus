@@ -11,171 +11,22 @@ curation, delegated to :class:`~stockscan.ops.state.OpsState`.
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 
 import numpy as np
 import pandas as pd
 
 
-# --- pure row shapers (testable with tiny DataFrames) ---------------------------
-
-def _decile(pct: float) -> int:
-    return int(np.clip(np.ceil(pct * 10), 1, 10))
-
-
-def scan_rows(cross: pd.DataFrame, sector: str | None = None) -> list[dict]:
-    """Ranked rows for the scan table from a SCORED cross-section (has score/pct)."""
-    view = cross if not sector or sector.lower() == "all" else cross[cross["sector"] == sector]
-    view = view.sort_values("score", ascending=False)
-    rows = []
-    for i, (_, r) in enumerate(view.iterrows(), 1):
-        rows.append({
-            "rank": i,
-            "cik": int(r["cik"]),
-            "ticker": str(r.get("ticker") or "—"),
-            "name": str(r.get("name") or "")[:38],
-            "sector": str(r.get("sector") or "—"),
-            "pct": int(round(float(r["pct"]) * 100)),
-            "decile": _decile(float(r["pct"])),
-            "fy": int(r["fy"]) if pd.notna(r.get("fy")) else None,
-        })
-    return rows
-
-
-def search_rows(cross: pd.DataFrame, query: str, limit: int = 40) -> list[dict]:
-    """Scan rows filtered to names whose ticker OR company-name contains ``query``.
-
-    Case-insensitive substring, ranked by score like the scan (best first). Empty
-    query returns the full ranked scan (capped)."""
-    q = str(query or "").strip()
-    if not q:
-        return scan_rows(cross)[:limit]
-    qu = q.upper()
-    tick = cross["ticker"].astype(str).str.upper().str.contains(qu, regex=False, na=False)
-    name = cross["name"].astype(str).str.upper().str.contains(qu, regex=False, na=False)
-    return scan_rows(cross[tick | name])[:limit]
-
-
-def sectors_in(cross: pd.DataFrame) -> list[str]:
-    return ["all", *sorted(cross["sector"].dropna().unique())]
-
-
-def watch_rows(watchlist: list[dict], cross: pd.DataFrame,
-               prev_signals: dict[int, dict], feats: pd.DataFrame,
-               as_of=None) -> list[dict]:
-    """Join watched CIKs to the current scored cross-section + last-seen signal.
-
-    A watched name absent from the cross-section (dead, stale filer, illiquid)
-    still appears — flagged — so the watchlist never silently drops the failures.
-    """
-    as_of = pd.Timestamp(as_of) if as_of is not None else None
-    by_cik = cross.set_index(cross["cik"].astype(int))
-    rows = []
-    for w in watchlist:
-        cik = int(w["cik"])
-        prev = prev_signals.get(cik) or {}
-        last_filing = None
-        fsub = feats[feats["cik"] == cik] if "cik" in feats.columns else feats.iloc[0:0]
-        if as_of is not None and "available_date" in fsub.columns:
-            fsub = fsub[fsub["available_date"] <= as_of]
-        if len(fsub):
-            last_filing = str(pd.Timestamp(fsub["available_date"].max()).date())
-        if cik in by_cik.index:
-            r = by_cik.loc[cik]
-            pct = int(round(float(r["pct"]) * 100))
-            prev_pct = prev.get("percentile")
-            # FIREWALLED distress flag (display only): surface elevated/high risk here so a
-            # watched name drifting toward failure is visible; it drives no trade action.
-            dflag = r.get("dflag") if "dflag" in cross.columns else None
-            flag = None
-            if dflag in ("elevated", "high"):
-                dp = float(r["dprob"]) if pd.notna(r.get("dprob")) else None
-                flag = f"⚠ distress {dflag}" + (f" (P≈{dp * 100:.0f}%)" if dp is not None else "")
-            rows.append({
-                "cik": cik, "ticker": str(w.get("column") or r.get("ticker") or "—"),
-                "pct": pct, "decile": _decile(float(r["pct"])),
-                "delta": (pct - prev_pct) if prev_pct is not None else None,
-                "last_filing": last_filing, "flag": flag,
-            })
-        else:
-            rows.append({
-                "cik": cik, "ticker": str(w.get("column") or "—"),
-                "pct": None, "decile": None, "delta": None,
-                "last_filing": last_filing,
-                "flag": "not in liquid universe / lapsed filer",
-            })
-    return rows
-
-
-def _pick_row(r) -> dict:
-    """One markets-page pick row from a scored cross-section row."""
-    return {
-        "cik": int(r["cik"]),
-        "ticker": str(r.get("ticker") or "—"),
-        "name": str(r.get("name") or "")[:34],
-        "pct": int(round(float(r["pct"]) * 100)),
-        "decile": _decile(float(r["pct"])),
-    }
-
-
-def market_rows(cross: pd.DataFrame, top_k: int = 6, min_names: int = 10) -> list[dict]:
-    """Per-industry ML top picks for the markets overview (sized later by market cap).
-
-    Groups by the fine ``sic_industry`` label (Semiconductors, Oil & Gas E&P,
-    Software, Banks, …) — NOT the coarse model sector — ordered by how many names
-    each holds. Industries thinner than ``min_names`` and the catch-all 'Unknown'
-    are dropped. Each market's ``picks`` are its highest-scoring names, best first;
-    the page annotates each with a live market cap fetched separately.
-    """
-    from ..sector import sic_industry
-
-    df = cross.copy()
-    df["_industry"] = df["sic"].map(sic_industry)
-    counts = df["_industry"].value_counts()
-    out = []
-    for industry in counts.index:
-        if not industry or str(industry) == "Unknown" or counts[industry] < min_names:
-            continue
-        sub = (df[df["_industry"] == industry]
-               .sort_values("score", ascending=False).head(top_k))
-        picks = [_pick_row(r) for _, r in sub.iterrows()]
-        if picks:
-            out.append({"market": str(industry), "count": int(counts[industry]),
-                        "picks": picks})
-    return out
-
-
-def theme_market_rows(cross: pd.DataFrame, tags: dict, top_k: int = 6,
-                      min_names: int = 3) -> list[dict]:
-    """Thematic 'markets' (AI/SaaS/EV…) from precomputed {cik: [themes]} tags.
-
-    Same shape as ``market_rows`` but membership comes from the auto-tagged theme
-    store rather than SIC. Only names present in the current cross-section count;
-    themes with fewer than ``min_names`` are dropped; ordered by tagged count.
-    """
-    if not tags:
-        return []
-    present = set(cross["cik"].astype(int))
-    by_theme: dict[str, set] = {}
-    for cik, themes in tags.items():
-        if int(cik) not in present:
-            continue
-        for t in themes:
-            by_theme.setdefault(t, set()).add(int(cik))
-
-    ciks_col = cross["cik"].astype(int)
-    out = []
-    for theme, ciks in by_theme.items():
-        if len(ciks) < min_names:
-            continue
-        sub = (cross[ciks_col.isin(ciks)]
-               .sort_values("score", ascending=False).head(top_k))
-        picks = [_pick_row(r) for _, r in sub.iterrows()]
-        if picks:
-            out.append({"market": str(theme), "count": len(ciks), "picks": picks})
-    out.sort(key=lambda m: m["count"], reverse=True)
-    return out
-
+from .rows import (
+    _decile,
+    market_rows,
+    scan_rows,
+    search_rows,
+    sectors_in,
+    theme_market_rows,
+    watch_rows,
+)
 
 # --- the loaded facade ----------------------------------------------------------
 
@@ -220,7 +71,18 @@ class ArgusData:
 
             cross["dprob"] = dart.score(cross)
             cross["dflag"] = [distress_flag(p) for p in cross["dprob"]]
+        # FIREWALLED large-drawdown risk-flag: display/book risk only; absent artifact ->
+        # no columns. Kept separate from the return score/pct/decile and from distress.
+        wart = getattr(self.data, "drawdown_artifact", None)
+        if wart is not None:
+            from ..drawdown import drawdown_flag
+
+            cross["wprob"] = wart.score(cross)
+            cross["wflag"] = [drawdown_flag(p) for p in cross["wprob"]]
         self._cross = cross
+        # the per-cik analyze cache mirrors _cross: a rebuilt cross-section must drop
+        # it, or /ask and /narrate would keep answering from the pre-update ranks
+        self.__dict__.pop("_analyze_cache", None)
 
     # -- view data ---------------------------------------------------------------
     def sectors(self) -> list[str]:
@@ -534,30 +396,81 @@ class ArgusData:
         return build_scorecard(entries, self._cross, prices, as_of=self.as_of)
 
     def ticker(self, query, as_of=None) -> dict:
-        """Full per-name analysis (deterministic; template narration included)."""
+        """Full per-name analysis (deterministic; template narration included).
+
+        Session-cached per cik at the loaded as-of: analyze() re-scores the whole
+        cross-section (~seconds), and the ticker page, /narrate and /ask each need
+        the SAME result — one analyze per name per session, not one per call. The
+        cache stores and hands out deep copies so no caller (narrate attaches news
+        to the packet in place) can leak into another's response; refresh() drops
+        it and a reload rebuilds the facade, so it never outlives the ranks it
+        mirrors. Failures (unknown cik, stale filer) propagate and are never
+        cached. Explicit ``as_of`` bypasses — a historical read is not this view."""
         from ..serve import analyze
 
-        return analyze(query, as_of=as_of or self.as_of, data=self.data,
-                       artifact=self.artifact, llm=None)
+        is_cik = isinstance(query, (int, np.integer)) or str(query).isdigit()
+        if as_of is not None or not is_cik:
+            return analyze(query, as_of=as_of or self.as_of, data=self.data,
+                           artifact=self.artifact, llm=None)
+        cik = int(query)
+        cache = self.__dict__.setdefault("_analyze_cache", {})
+        if cik in cache:
+            return copy.deepcopy(cache[cik])
+        res = analyze(cik, as_of=self.as_of, data=self.data,
+                      artifact=self.artifact, llm=None)
+        cache[cik] = copy.deepcopy(res)
+        return res
 
-    def narrate(self, packet, llm_full=None, llm_light=None) -> dict:
-        """On-demand ('n' key) narration with the local model, bringing up recalled news.
+    def narrate(self, packet, llm_full=None, llm_light=None, cache=None) -> dict:
+        """On-demand narration with the local model, tiered through the SAME
+        NarrationCache/narrate_smart machinery the nightly monitor uses.
 
-        Runs in the narrate worker thread. Attaches CURRENT news context (LIVE-VIEW;
-        excluded from any cache key) and narrates FRESH at the full tier — the user
-        asked for a current read, so this deliberately does NOT serve the monitor's
-        cached, fundamental-only narration (nor overwrite it). A dead LLM endpoint
-        degrades to the grounded template inside narrate_packet (never crashes)."""
+        Unchanged fundamentals serve the cached narration instantly (tier "cache" —
+        no 30-90s LLM wait); a minor wiggle re-narrates at the light tier; a
+        material change (new filing / big percentile move / new top drivers) gets
+        the full tier. CURRENT news context (LIVE-VIEW) is attached first so any
+        FRESH narration weaves it in — news is excluded from the durable packet
+        hash by design, so headline churn never busts the cache. A dead LLM
+        endpoint degrades to the grounded template inside narrate_packet (never
+        crashes) and narrate_smart keeps that out of the cache."""
+        from ..config import LLM_LIGHT_MODEL
+        from ..narrate.cache import NarrationCache, narrate_smart
         from ..narrate.llm import LocalLLM
-        from ..narrate.narrator import narrate_packet
         from ..narrate.packet import news_context
 
         ctx = news_context(self._news_context(int(packet["meta"]["cik"])))
         if ctx:
             packet.setdefault("context", {})["news"] = ctx
-        res = narrate_packet(packet, llm=llm_full or LocalLLM())
-        res["tier"] = ("full+news" if ctx else "full") if res.get("source") == "llm" else "template"
+        own = cache is None
+        if own:   # short-lived connection per call, like every DB touch on this facade
+            cache = NarrationCache()
+        try:
+            res = narrate_smart(packet, llm_full=llm_full or LocalLLM(),
+                                llm_light=llm_light or LocalLLM(model=LLM_LIGHT_MODEL),
+                                cache=cache)
+        finally:
+            if own:
+                cache.close()
+        if ctx and res.get("source") == "llm" and res.get("tier") in ("full", "light"):
+            res["tier"] += "+news"
         return res
+
+    @staticmethod
+    def _chat_llm():
+        """The interactive-chat client: independently swappable model, hard token
+        cap, short timeout (config LLM_CHAT_*). Grounding checks every numeral no
+        matter the model, so a smaller/faster one loses polish, not honesty."""
+        from ..config import (
+            LLM_CHAT_MAX_TOKENS,
+            LLM_CHAT_MODEL,
+            LLM_CHAT_REASONING,
+            LLM_CHAT_TIMEOUT,
+        )
+        from ..narrate.llm import LocalLLM
+
+        return LocalLLM(model=LLM_CHAT_MODEL, timeout=LLM_CHAT_TIMEOUT,
+                        max_tokens=LLM_CHAT_MAX_TOKENS,
+                        reasoning_effort=LLM_CHAT_REASONING)
 
     def ask(self, cik: int, question: str, history: list | None = None, llm=None) -> dict:
         """Grounded chat about ONE name — the narration made interactive (web 'ask' box).
@@ -570,7 +483,6 @@ class ArgusData:
         never a guess, never advice. ``history`` rides in from the browser (the
         server stays stateless) and never expands the grounding domain."""
         from ..assist.qa import answer_about_company
-        from ..narrate.llm import LocalLLM
         from ..narrate.packet import news_context
         from .chart import verdict as call_verdict
 
@@ -581,14 +493,62 @@ class ArgusData:
             packet["context"] = {**(packet.get("context") or {}), "news": ctx}
         res["packet"] = packet
         pr = self.price(int(cik))
-        # a chat turn should feel conversational, not narration-length: shorter timeout
         r = answer_about_company(
-            res, question, llm or LocalLLM(timeout=180.0), history=history,
+            res, question, llm or self._chat_llm(), history=history,
             price_summary=(pr or {}).get("summary"),
             verdict=call_verdict((res.get("percentile") or 0) / 100.0))
         m = packet.get("meta") or {}
         return {**r, "cik": int(cik), "ticker": m.get("ticker"), "name": m.get("name"),
                 "n_news": len(ctx or [])}
+
+    def ask_book(self, question: str, history: list | None = None, llm=None) -> dict:
+        """Grounded chat about the BOOK — the scorecard made interactive (web ask box).
+
+        Same contract as :meth:`ask`, one level up: the grounding context is exactly
+        the scorecard the book tab shows, widened only with display-rounded citable
+        twins (assist.book.build_book_context). Every numeral in the answer must
+        trace to it or the assistant refuses — never a guess, never a portfolio
+        forecast, never advice. ``history`` rides in from the browser (the server
+        stays stateless) and never expands the grounding domain."""
+        from ..assist.book import answer_about_book
+
+        sc = self.scorecard()
+        r = answer_about_book(sc, question, llm or self._chat_llm(),
+                              history=history)
+        return {**r, "n_names": sc.get("n_total", 0), "as_of": sc.get("as_of")}
+
+    def digest(self) -> dict:
+        """Overnight ops record (jobs, unseen alerts, paper status) — deterministic.
+
+        The instant, number-true payload for the web digest card; the LLM prose
+        over it is :meth:`digest_brief` (separate, slow, optional)."""
+        from ..assist.brief import build_brief_context
+        from ..ops.state import OpsState
+
+        try:
+            paper = self.paper()
+        except Exception:
+            paper = None
+        if paper is not None:   # the card needs the verdict, not 12 months of detail
+            paper = {k: paper.get(k) for k in
+                     ("months_scored_oos", "live_mean_ic", "degraded", "note")
+                     if k in paper}
+        with OpsState() as st:
+            return build_brief_context(st, paper=paper)
+
+    def digest_brief(self, llm=None) -> dict:
+        """The grounded LLM morning brief over :meth:`digest` (refuses over inventing)."""
+        from ..assist.brief import nightly_brief
+
+        return nightly_brief(self.digest(), llm or self._chat_llm())
+
+    def watched_ciks(self) -> list[int]:
+        """Just the watched CIKs — the scan page's star column wants a cheap set,
+        not the full watch_rows join."""
+        from ..ops.state import OpsState
+
+        with OpsState() as st:
+            return [int(w["cik"]) for w in st.watchlist()]
 
     def watch(self) -> dict:
         from ..ops.state import OpsState

@@ -571,3 +571,55 @@ def compare(
         report["note"] = (f"needs {rule['min_months']} out-of-sample scored months "
                           f"before the degradation rule applies")
     return report
+
+
+def paper_progress_alerts(state, rep: dict) -> dict:
+    """Turn a :func:`compare` report into ALERTS on progress, so the whole
+    paper-forward exercise reaches the user instead of waiting to be looked at.
+
+    Two events matter: a NEW out-of-sample month graded (the honest test gained a
+    data point — the first one is the moment the freeze starts earning trust), and
+    the degradation verdict FLIPPING either way. Previous counts live in the job
+    log (the last ``paper_check`` run's deltas), so this is idempotent across
+    re-runs and wake-coalesced double-fires. First run seeds silently, matching
+    the filing-detection bootstrap convention."""
+    prev = state.last_run("paper_check")
+    prev_d = (prev or {}).get("deltas") or {}
+    n_prev = int(prev_d.get("months_scored_oos") or 0)
+    n_now = int(rep.get("months_scored_oos") or 0)
+    deltas: dict = {
+        "months_scored_oos": n_now,
+        "degraded": rep.get("degraded"),
+        "live_mean_ic": rep.get("live_mean_ic"),
+        "alerts": 0,
+    }
+    if prev is None:                      # bootstrap: record state, alert on changes
+        deltas["note"] = "seeded"
+        return deltas
+
+    if n_now > n_prev:
+        exp = (rep.get("baseline") or {}).get("expected_ic")
+        state.add_alert(
+            "paper_graded",
+            f"paper-forward: {n_now - n_prev} new out-of-sample month(s) graded "
+            f"({n_now} total) — live mean IC {rep.get('live_mean_ic')} vs backtest "
+            f"expectation {exp}",
+            payload={"months_scored_oos": n_now,
+                     "live_mean_ic": rep.get("live_mean_ic"), "expected_ic": exp})
+        deltas["alerts"] += 1
+
+    deg, prev_deg = rep.get("degraded"), prev_d.get("degraded")
+    if deg is not None and deg != prev_deg:
+        floor = rep.get("degradation_floor")
+        if deg:
+            msg = (f"paper-forward DEGRADED: live mean IC {rep.get('live_mean_ic')} "
+                   f"fell below the degradation floor {floor} — the frozen model is "
+                   f"underperforming its backtest expectation out of sample")
+        else:
+            msg = (f"paper-forward recovered: live mean IC {rep.get('live_mean_ic')} "
+                   f"back above the degradation floor {floor}")
+        state.add_alert("paper_degraded" if deg else "paper_recovered", msg,
+                        payload={"degraded": deg, "live_mean_ic": rep.get("live_mean_ic"),
+                                 "floor": floor})
+        deltas["alerts"] += 1
+    return deltas

@@ -117,7 +117,11 @@ def test_optional_loader_returns_none_when_absent(tmp_path):
 
 
 def test_drawdown_flag_levels():
-    assert drawdown_flag(0.7) == "high"
-    assert drawdown_flag(0.45) == "elevated"
+    # Calibrated on the frozen 6mo/-30% artifact: ~0.55 is already ~1.8x the
+    # base drawdown rate, while ~0.70 is top-tail (~2x base) risk.
+    assert drawdown_flag(0.70) == "high"
+    assert drawdown_flag(0.69) == "elevated"
+    assert drawdown_flag(0.55) == "elevated"
+    assert drawdown_flag(0.54) == "normal"
     assert drawdown_flag(0.1) == "normal"
     assert drawdown_flag(float("nan")) == "normal"

@@ -3,9 +3,21 @@
   "configurations": [
     {
       "name": "argus-web",
-      "runtimeExecutable": ".venv/bin/python",
-      "runtimeArgs": ["-m", "uvicorn", "stockscan.web.server:app", "--host", "127.0.0.1", "--port", "8023"],
-      "port": 8023
+      "runtimeExecutable": "env",
+      "runtimeArgs": [
+        "STOCKSCAN_DATA_DIR=/Users/mpawlowski/Documents/Personal/stock-analysis/data",
+        "STOCKSCAN_ARTIFACTS_DIR=/Users/mpawlowski/Documents/Personal/stock-analysis/artifacts",
+        ".venv/bin/python",
+        "-m",
+        "uvicorn",
+        "stockscan.web.server:app",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8137"
+      ],
+      "port": 8137,
+      "autoPort": false
     }
   ]
 }
