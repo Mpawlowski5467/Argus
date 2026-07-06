@@ -190,6 +190,17 @@ def job_themes(state: OpsState) -> dict:
     return _run_logged(state, "themes", _build)
 
 
+def job_paper_check(state: OpsState) -> dict:
+    """Grade-progress alerts: a newly scored OOS month / a degradation flip
+    reaches the user as an alert instead of waiting to be looked at."""
+    from stockscan.ops import paper
+
+    def _run() -> dict:
+        return paper.paper_progress_alerts(state, paper.compare())
+
+    return _run_logged(state, "paper_check", _run)
+
+
 def job_backup(state: OpsState) -> dict:
     """SQLite-store backups + log rotation (see ops/housekeeping.py)."""
     from stockscan.ops.housekeeping import backup_stores, rotate_logs
@@ -236,6 +247,11 @@ def job_nightly(state: OpsState, no_llm: bool = False) -> int:
         _backfill_missing_paper_months(state)
     else:
         print("[paper_log] not due")
+
+    # progress alerts on the paper record (newly graded OOS month, degradation flip)
+    from stockscan.config import PAPER_DIR
+    if (Path(PAPER_DIR) / "baseline.json").exists():
+        job_paper_check(state)
 
     # a degraded price night suppresses percentile alerts AND narration: ranks over
     # a half-updated store fire false alerts, then fire them in reverse on recovery

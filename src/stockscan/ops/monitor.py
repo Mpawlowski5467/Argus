@@ -94,6 +94,37 @@ def detect_edgar_filings(state: OpsState, ciks: list[int],
     return news
 
 
+def book_weights(state: OpsState, data) -> dict[int, float]:
+    """Value weight of each HELD cik in the user's book, from the last close.
+
+    DISPLAY-ONLY: used solely to annotate alert text so a watch alert on a name
+    you actually hold reads with the urgency it deserves. Positions never feed
+    the score, the paper book, or any signal computation — this function's output
+    goes into alert MESSAGES and nowhere else."""
+    try:
+        pos = state.positions()
+    except Exception:
+        return {}
+    vals: dict[int, float] = {}
+    for p in pos:
+        cik, shares = int(p["cik"]), float(p.get("shares") or 0)
+        col = data.ticker_map.get(cik)
+        if shares <= 0 or not col or col not in data.close.columns:
+            continue
+        s = data.close[col].dropna()
+        if len(s):
+            vals[cik] = shares * float(s.iloc[-1])
+    total = sum(vals.values())
+    return {c: v / total for c, v in vals.items()} if total > 0 else {}
+
+
+def _held_note(weights: dict[int, float], cik: int) -> str:
+    w = weights.get(int(cik))
+    if w is None:
+        return ""
+    return f" — you hold ≈{w * 100:.0f}% of your book"
+
+
 def run_monitor(
     state: OpsState,
     data=None,
@@ -167,6 +198,9 @@ def run_monitor(
     if cache is None and narrate:
         cache = NarrationCache()
 
+    # position-aware annotation (display-only): a signal alert on a HELD name says so
+    weights = book_weights(state, data)
+
     tiers: dict[str, int] = {}
     for w in watch:
         cik = w["cik"]
@@ -185,7 +219,7 @@ def run_monitor(
                     "percentile_move",
                     f"cik {cik} ({res['column'] or 'no column'}): model percentile "
                     f"{prev['percentile']} -> {pct} "
-                    f"({prev['as_of']} -> {as_of.date()})",
+                    f"({prev['as_of']} -> {as_of.date()})" + _held_note(weights, cik),
                     cik=cik,
                     payload={"from": prev["percentile"], "to": pct,
                              "decile": res["decile"]},
@@ -205,7 +239,8 @@ def run_monitor(
                         "distress_risk",
                         f"cik {cik} ({res['column'] or 'no column'}): distress-risk flag "
                         f"{prev_lvl} -> {dz['flag']} (P≈{dz['prob'] * 100:.1f}% within "
-                        f"{dz['horizon_months']}mo) [risk-flag only, not a trade signal]",
+                        f"{dz['horizon_months']}mo) [risk-flag only, not a trade signal]"
+                        + _held_note(weights, cik),
                         cik=cik,
                         payload={"from": prev_lvl, "to": dz["flag"], "prob": dz["prob"]},
                     )
