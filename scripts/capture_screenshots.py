@@ -4,8 +4,9 @@ Drives a running argus-web instance with headless Chromium. Point it at a
 THROWAWAY server seeded with demo data so no real portfolio is published:
 
     pip/uv install playwright && python -m playwright install chromium
-    STOCKSCAN_OPS_STATE_PATH=/tmp/demo.sqlite \
-        uv run python -m uvicorn stockscan.web.server:app --port 8024   # (seed demo first)
+    uv run python scripts/capture_screenshots.py --seed-demo      # /tmp/argus-demo.sqlite
+    STOCKSCAN_OPS_STATE_PATH=/tmp/argus-demo.sqlite \
+        uv run python -m uvicorn stockscan.web.server:app --port 8024
     uv run python scripts/capture_screenshots.py http://127.0.0.1:8024
 
 Regenerate whenever the UI changes. Pure docs tooling — not imported anywhere.
@@ -16,11 +17,43 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from playwright.sync_api import sync_playwright
-
 BASE = sys.argv[1] if len(sys.argv) > 1 else "http://127.0.0.1:8024"
 OUT = Path(__file__).resolve().parents[1] / "docs" / "img"
 OUT.mkdir(parents=True, exist_ok=True)
+
+DEMO_STORE = Path("/tmp/argus-demo.sqlite")
+
+
+def seed_demo(path: Path = DEMO_STORE) -> int:
+    """A throwaway ops store with well-known names and invented sizes — what the
+    published screenshots show instead of the real watchlist/positions."""
+    import os
+
+    os.environ["STOCKSCAN_OPS_STATE_PATH"] = str(path)
+    path.unlink(missing_ok=True)
+    from stockscan.ops.health import health_record, run_checks
+    from stockscan.ops.state import OpsState
+
+    with OpsState(path) as st:
+        for cik, tk in [(320193, "AAPL"), (789019, "MSFT"), (1045810, "NVDA"),
+                        (1341439, "ORCL"), (1065280, "NFLX")]:
+            st.watch_add(cik, tk)
+        st.position_set(320193, 40, 152.30)
+        st.position_set(789019, 15, 310.00)
+        st.position_set(1045810, 12, 88.50)
+        st.add_alert("percentile_move",
+                     "AAPL percentile moved +12 since the last monitor run", cik=320193)
+        st.kv_set("digest_brief", {"answer": (
+            "Quiet night: all six scheduled jobs finished ok and prices are current. "
+            "One watchlist name moved enough to alert; nothing needs attention this "
+            "morning.")})
+        rid = st.job_start("nightly")
+        st.job_finish(rid, "ok", {})
+        rid = st.job_start("health")
+        rec = health_record(run_checks(), set(), st.add_alert)
+        st.job_finish(rid, "degraded" if rec["critical_failing"] else "ok", rec)
+    print(f"demo store seeded -> {path}")
+    return 0
 
 
 def _tab(page, view):
@@ -28,6 +61,10 @@ def _tab(page, view):
 
 
 def main() -> int:
+    if "--seed-demo" in sys.argv:
+        return seed_demo()
+    from playwright.sync_api import sync_playwright
+
     with sync_playwright() as p:
         browser = p.chromium.launch()
         page = browser.new_page(viewport={"width": 1280, "height": 860},
@@ -80,6 +117,13 @@ def main() -> int:
         page.wait_for_timeout(500)
         page.screenshot(path=str(OUT / "paper.png"))
         print("paper.png")
+
+        # 6 · watch — digest card, watchlist risk chips, alerts, system health
+        _tab(page, "watch")
+        page.wait_for_selector("#watch-table tbody tr", timeout=20_000)
+        page.wait_for_timeout(600)
+        page.screenshot(path=str(OUT / "watch.png"), full_page=True)
+        print("watch.png")
 
         browser.close()
     print("done ->", OUT)

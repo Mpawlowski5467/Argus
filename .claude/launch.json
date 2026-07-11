@@ -2,6 +2,25 @@
   "version": "0.0.1",
   "configurations": [
     {
+      "name": "argus-web-demo",
+      "runtimeExecutable": "env",
+      "runtimeArgs": [
+        "STOCKSCAN_DATA_DIR=/Users/mpawlowski/Documents/Personal/stock-analysis/data",
+        "STOCKSCAN_ARTIFACTS_DIR=/Users/mpawlowski/Documents/Personal/stock-analysis/artifacts",
+        "STOCKSCAN_OPS_STATE_PATH=/tmp/argus-demo.sqlite",
+        ".venv/bin/python",
+        "-m",
+        "uvicorn",
+        "stockscan.web.server:app",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8024"
+      ],
+      "port": 8024,
+      "autoPort": false
+    },
+    {
       "name": "argus-web",
       "runtimeExecutable": "env",
       "runtimeArgs": [

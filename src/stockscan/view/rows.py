@@ -17,6 +17,23 @@ def _decile(pct: float) -> int:
     return int(np.clip(np.ceil(pct * 10), 1, 10))
 
 
+def _risk_chips(r, cols) -> list[dict]:
+    """FIREWALLED display flags (distress / drawdown) as compact chips — elevated and
+    high only, so a browsing table shows the risk reads without a column of 'none'.
+    Display-only like everywhere else: never a trade input."""
+    chips = []
+    for flag_col, prob_col, kind in (("dflag", "dprob", "distress"),
+                                     ("wflag", "wprob", "drawdown")):
+        if flag_col not in cols:
+            continue
+        level = r.get(flag_col)
+        if level in ("elevated", "high"):
+            p = float(r[prob_col]) if pd.notna(r.get(prob_col)) else None
+            chips.append({"kind": kind, "level": level,
+                          "prob_pct": int(round(p * 100)) if p is not None else None})
+    return chips
+
+
 def scan_rows(cross: pd.DataFrame, sector: str | None = None) -> list[dict]:
     """Ranked rows for the scan table from a SCORED cross-section (has score/pct)."""
     view = cross if not sector or sector.lower() == "all" else cross[cross["sector"] == sector]
@@ -32,6 +49,7 @@ def scan_rows(cross: pd.DataFrame, sector: str | None = None) -> list[dict]:
             "pct": int(round(float(r["pct"]) * 100)),
             "decile": _decile(float(r["pct"])),
             "fy": int(r["fy"]) if pd.notna(r.get("fy")) else None,
+            "risk": _risk_chips(r, view.columns),
         })
     return rows
 
@@ -90,6 +108,7 @@ def watch_rows(watchlist: list[dict], cross: pd.DataFrame,
                 "pct": pct, "decile": _decile(float(r["pct"])),
                 "delta": (pct - prev_pct) if prev_pct is not None else None,
                 "last_filing": last_filing, "flag": flag,
+                "risk": _risk_chips(r, cross.columns),
             })
         else:
             rows.append({
@@ -97,6 +116,7 @@ def watch_rows(watchlist: list[dict], cross: pd.DataFrame,
                 "pct": None, "decile": None, "delta": None,
                 "last_filing": last_filing,
                 "flag": "not in liquid universe / lapsed filer",
+                "risk": [],
             })
     return rows
 
