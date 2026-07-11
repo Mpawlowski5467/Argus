@@ -202,10 +202,11 @@ def job_paper_check(state: OpsState) -> dict:
 
 
 def job_backup(state: OpsState) -> dict:
-    """SQLite-store backups + log rotation (see ops/housekeeping.py)."""
-    from stockscan.ops.housekeeping import backup_stores, rotate_logs
+    """SQLite-store + frozen-artifact backups + log rotation (see ops/housekeeping.py)."""
+    from stockscan.ops.housekeeping import backup_artifacts, backup_stores, rotate_logs
 
     _run_logged(state, "rotate_logs", rotate_logs)
+    _run_logged(state, "backup_artifacts", backup_artifacts)
     return _run_logged(state, "backup", backup_stores)
 
 

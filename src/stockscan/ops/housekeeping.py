@@ -1,13 +1,21 @@
-"""Nightly housekeeping: SQLite backups + log rotation.
+"""Nightly housekeeping: SQLite backups, frozen-artifact backups, log rotation.
 
-The stores under artifacts/ are the only irreplaceable personal state in the whole
-system — positions, watchlist, alerts, job history (ops_state.sqlite) — plus caches
-that are expensive to rebuild against vendor quotas (news, profiles). Everything
-else on disk regenerates from EDGAR/Intrinio. So the nightly copies each store with
-SQLite's online backup API (WAL-safe: a consistent snapshot even mid-write) into a
-dated folder and prunes old folders. Logs get copy-truncate rotation — safe with
-append-mode writers (launchd's StandardOutPath, the web nightly log), which keep
-writing at the new EOF after truncation.
+The stores under artifacts/ are irreplaceable personal state — positions, watchlist,
+alerts, job history (ops_state.sqlite) — plus caches that are expensive to rebuild
+against vendor quotas (news, profiles). The nightly copies each store with SQLite's
+online backup API (WAL-safe: a consistent snapshot even mid-write) into a dated
+folder and prunes old folders.
+
+Two other things can NEVER be regenerated and were a backup blind spot until
+2026-07-11: the frozen model artifacts (a retrained booster is never bit-identical,
+so the paper-forward experiment is anchored to these exact bytes) and the append-only
+paper trail itself (baseline.json / vintages.jsonl / signals/*.jsonl — the live OOS
+record). :func:`backup_artifacts` copies both into the same dated snapshot (~3 MB;
+all files are written via tmp+rename, so a plain copy is safe).
+
+Logs get copy-truncate rotation — safe with append-mode writers (launchd's
+StandardOutPath, the web nightly log), which keep writing at the new EOF after
+truncation.
 """
 
 from __future__ import annotations
@@ -59,6 +67,43 @@ def backup_stores(stores_dir: Path = ARTIFACTS_DIR, out_dir: Path = BACKUPS_DIR,
         pruned.append(old.name)
 
     out: dict = {"day": str(t.date()), "copied": copied, "pruned": pruned}
+    if errors:
+        out["errors"] = errors
+        out["_status"] = "degraded"
+    return out
+
+
+# The unregenerable artifacts: frozen model heads + the append-only paper trail.
+# Everything here is small (couple MB) and written via tmp+os.replace, so a plain
+# tree copy is a consistent snapshot.
+ARTIFACT_DIRS = ("model", "distress_model", "drawdown_model", "confidence_cal",
+                 "paper_forward")
+
+
+def backup_artifacts(stores_dir: Path = ARTIFACTS_DIR, out_dir: Path = BACKUPS_DIR,
+                     dirs: tuple[str, ...] = ARTIFACT_DIRS, today=None) -> dict:
+    """Copy the frozen-artifact dirs into the same dated snapshot ``backup_stores``
+    uses. Idempotent (same-day re-run overwrites); a missing dir is reported, not an
+    error — a head that was never frozen simply isn't there yet. Pruning is left to
+    ``backup_stores`` so the two never disagree about retention."""
+    t = pd.Timestamp(today) if today is not None else pd.Timestamp.today()
+    day_dir = Path(out_dir) / str(t.date())
+    day_dir.mkdir(parents=True, exist_ok=True)
+
+    copied, missing, errors = [], [], []
+    for name in dirs:
+        src = Path(stores_dir) / name
+        if not src.is_dir():
+            missing.append(name)
+            continue
+        try:
+            shutil.copytree(src, day_dir / name, dirs_exist_ok=True)
+            copied.append(name)
+        except OSError as exc:
+            errors.append({"dir": name, "error": str(exc)})
+            shutil.rmtree(day_dir / name, ignore_errors=True)  # no half snapshots
+
+    out: dict = {"day": str(t.date()), "copied": copied, "missing": missing}
     if errors:
         out["errors"] = errors
         out["_status"] = "degraded"

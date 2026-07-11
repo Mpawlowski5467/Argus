@@ -6,7 +6,7 @@ import sqlite3
 
 
 from stockscan.ops.health import head_staleness
-from stockscan.ops.housekeeping import backup_stores, rotate_logs
+from stockscan.ops.housekeeping import backup_artifacts, backup_stores, rotate_logs
 
 
 def _make_store(path, rows: int) -> None:
@@ -49,6 +49,44 @@ def test_backup_degrades_on_a_corrupt_store_and_keeps_going(tmp_path):
     assert d["copied"] == ["good.sqlite"]
     assert d["_status"] == "degraded" and d["errors"][0]["store"] == "corrupt.sqlite"
     assert not (out / "2026-07-05" / "corrupt.sqlite").exists()  # no half snapshot
+
+
+def test_backup_artifacts_copies_frozen_heads_and_paper_trail(tmp_path):
+    stores = tmp_path / "artifacts"
+    out = tmp_path / "backups"
+    (stores / "model").mkdir(parents=True)
+    (stores / "model" / "booster.txt").write_text("frozen bytes")
+    (stores / "model" / "meta.json").write_text("{}")
+    (stores / "paper_forward" / "signals").mkdir(parents=True)
+    (stores / "paper_forward" / "baseline.json").write_text("{}")
+    (stores / "paper_forward" / "signals" / "2026-06-30.jsonl").write_text("{}\n")
+
+    d = backup_artifacts(stores_dir=stores, out_dir=out, today="2026-07-11")
+    assert d["copied"] == ["model", "paper_forward"]
+    # unfrozen heads are reported missing, never an error
+    assert set(d["missing"]) == {"distress_model", "drawdown_model", "confidence_cal"}
+    assert "_status" not in d
+    day = out / "2026-07-11"
+    assert (day / "model" / "booster.txt").read_text() == "frozen bytes"
+    assert (day / "paper_forward" / "signals" / "2026-06-30.jsonl").exists()
+    # idempotent: same-day re-run overwrites cleanly
+    d2 = backup_artifacts(stores_dir=stores, out_dir=out, today="2026-07-11")
+    assert d2["copied"] == ["model", "paper_forward"]
+
+
+def test_backup_artifacts_shares_the_dated_snapshot_with_stores(tmp_path):
+    stores = tmp_path / "artifacts"
+    out = tmp_path / "backups"
+    stores.mkdir()
+    _make_store(stores / "ops_state.sqlite", 2)
+    (stores / "confidence_cal").mkdir()
+    (stores / "confidence_cal" / "calibration.json").write_text("{}")
+
+    backup_artifacts(stores_dir=stores, out_dir=out, today="2026-07-11")
+    backup_stores(stores_dir=stores, out_dir=out, keep=2, today="2026-07-11")
+    day = out / "2026-07-11"
+    assert (day / "ops_state.sqlite").exists()
+    assert (day / "confidence_cal" / "calibration.json").exists()
 
 
 def test_rotate_logs_copy_truncates_only_fat_logs(tmp_path):
