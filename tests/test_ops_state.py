@@ -22,6 +22,25 @@ def test_job_run_logging(state):
     assert state.last_run("universe") is None
 
 
+def test_reap_stale_runs_aborts_only_old_running_rows(state):
+    # a stranded row from a killed process, backdated past the age guard
+    old_id = state.job_start("prices")
+    state._db.execute("update job_runs set started = '2026-01-01T00:00:00+00:00' "
+                      "where id = ?", (old_id,))
+    state._db.commit()
+    state.job_start("monitor")             # genuinely running right now
+    done_id = state.job_start("news")
+    state.job_finish(done_id, "ok")
+
+    reaped = state.reap_stale_runs(max_age_hours=24)
+    assert [r["id"] for r in reaped] == [old_id]
+    assert state.last_run("prices")["status"] == "aborted"
+    assert state.last_run("prices")["deltas"]["reaped"] is True
+    assert state.last_run("monitor")["status"] == "running"   # age guard held
+    assert state.last_run("news")["status"] == "ok"
+    assert state.reap_stale_runs(max_age_hours=24) == []      # idempotent
+
+
 def test_watchlist_add_remove_idempotent(state):
     state.watch_add(320193, "AAPL", "core")
     state.watch_add(320193, "AAPL", "core")  # replay is safe

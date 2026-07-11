@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from ..config import OPS_STATE_PATH
@@ -25,7 +25,7 @@ create table if not exists job_runs (
     job text not null,
     started text not null,
     finished text,
-    status text not null default 'running',   -- running | ok | failed | noop
+    status text not null default 'running',   -- running | ok | failed | noop | aborted
     deltas text                                -- JSON summary of what changed
 );
 create table if not exists watchlist (
@@ -123,6 +123,27 @@ class OpsState:
             (_utcnow(), status, json.dumps(deltas or {}, default=str), run_id),
         )
         self._db.commit()
+
+    def reap_stale_runs(self, max_age_hours: float = 24.0) -> list[dict]:
+        """Mark job_runs stuck in 'running' longer than ``max_age_hours`` as 'aborted'.
+
+        A killed process (power loss, kill -9 mid-nightly) leaves its row 'running'
+        forever, which reads as a live job to ``last_run`` and the health check.
+        Age-guarded so the genuinely-running row of a live job is never touched."""
+        cutoff = (datetime.now(timezone.utc)
+                  - timedelta(hours=max_age_hours)).isoformat(timespec="seconds")
+        rows = self._db.execute(
+            "select id, job, started from job_runs where status = 'running' "
+            "and started < ?", (cutoff,),
+        ).fetchall()
+        for rid, _job, started in rows:
+            self._db.execute(
+                "update job_runs set finished = ?, status = 'aborted', deltas = ? "
+                "where id = ?",
+                (_utcnow(), json.dumps({"reaped": True, "started": started}), rid),
+            )
+        self._db.commit()
+        return [{"id": r[0], "job": r[1], "started": r[2]} for r in rows]
 
     def last_run(self, job: str, status: str | None = None) -> dict | None:
         q = "select id, job, started, finished, status, deltas from job_runs where job = ?"
