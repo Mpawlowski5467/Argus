@@ -247,6 +247,18 @@ def job_digest(state: OpsState) -> dict:
     return _run_logged(state, "digest", _run)
 
 
+def job_judge(state: OpsState) -> dict:
+    """Advisory faithfulness pass over a sample of the last day's SHOWN LLM turns
+    (assist.telemetry) — paraphrase-level drift gets measured nightly instead of
+    assumed. Flags raise an in-app 'judge_flag' alert; never high-severity."""
+    from stockscan.assist.telemetry import judge_sample
+    from stockscan.narrate.llm import make_llm
+
+    since = (pd.Timestamp.now("UTC") - pd.Timedelta(days=1)).isoformat(timespec="seconds")
+    return _run_logged(state, "judge",
+                       lambda: judge_sample(state, make_llm("full"), since))
+
+
 def job_monitor(state: OpsState, no_llm: bool = False, edgar: bool = True,
                 alerts_ok: bool = True) -> dict:
     from stockscan.narrate.llm import make_llm
@@ -315,6 +327,11 @@ def job_nightly(state: OpsState, no_llm: bool = False) -> int:
             job_digest(state)
         except Exception as exc:
             print(f"[digest] skipped: {type(exc).__name__}: {exc}")
+        # advisory faithfulness pass over yesterday's shown answers (sample of 3)
+        try:
+            job_judge(state)
+        except Exception as exc:
+            print(f"[judge] skipped: {type(exc).__name__}: {exc}")
 
     # health screen over tonight's end state — cheap; newly-failing criticals become
     # alerts (picked up by the notification below). Same never-fail-the-night wrap.
@@ -425,6 +442,8 @@ def main(argv=None) -> int:
     sub.add_parser("health")
     sub.add_parser("backup")
     sub.add_parser("digest")
+    lt = sub.add_parser("llm-turns")
+    lt.add_argument("--days", type=int, default=7)
     p = sub.add_parser("install-launchd")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--uninstall", action="store_true")
@@ -447,6 +466,25 @@ def main(argv=None) -> int:
             ctx = build_brief_context(state)
         # chat tier: capped + reasoning-off — same client the web digest card uses
         print(nightly_brief(ctx, make_llm("chat"))["answer"])
+        return 0
+
+    if args.cmd == "llm-turns":
+        since = (pd.Timestamp.now("UTC")
+                 - pd.Timedelta(days=args.days)).isoformat(timespec="seconds")
+        with OpsState() as state:
+            s = state.llm_turn_stats(since)
+            print(f"last {args.days}d: {s['turns']} turns · {s['refused']} refused · "
+                  f"avg {s['avg_latency_ms']}ms · max {s['max_latency_ms']}ms · "
+                  f"{s['judged_with_issues']} judged-with-issues")
+            rows = state._db.execute(
+                "select ts, surface, refused, latency_ms, judged, judge_issues, "
+                "question from llm_turns where ts >= ? order by id desc limit 30",
+                (since,)).fetchall()
+            for r in rows:
+                mark = "REFUSED" if r[2] else ("ISSUES" if r[4] and r[5] not in
+                                               (None, "[]") else "ok")
+                print(f"  {r[0][:16]}  {r[1]:<9} {mark:<8} {r[3] or 0:>6}ms  "
+                      f"{(r[6] or '')[:60]}")
         return 0
 
     if args.cmd == "install-launchd":
