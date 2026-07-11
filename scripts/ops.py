@@ -196,7 +196,12 @@ def job_paper_check(state: OpsState) -> dict:
     from stockscan.ops import paper
 
     def _run() -> dict:
-        return paper.paper_progress_alerts(state, paper.compare())
+        rep = paper.compare()
+        deltas = paper.paper_progress_alerts(state, rep)
+        # one markdown scorecard per scoreable month (idempotent; refreshed when the
+        # running gate numbers move) — the artifact the whole experiment reports into
+        deltas["reports"] = paper.write_month_reports(rep)
+        return deltas
 
     return _run_logged(state, "paper_check", _run)
 

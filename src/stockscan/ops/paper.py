@@ -573,6 +573,81 @@ def compare(
     return report
 
 
+def month_close_report(month: dict, rep: dict, h_main: int = 63) -> str:
+    """One scoreable month rendered as a markdown scorecard — every number verbatim
+    from :func:`compare` (nothing recomputed here), caveats carried inline so the
+    report can't read stronger than the record it summarizes."""
+    as_of = str(month.get("as_of", ""))[:10]
+    base = rep.get("baseline") or {}
+    lines = [
+        f"# Paper-forward month close — {as_of[:7]}",
+        "",
+        f"- signal date: {as_of} · {month.get('n')} names logged"
+        + (" · **IN-SAMPLE** (inside the frozen training window — shown for "
+           "completeness, EXCLUDED from the gate)" if month.get("in_sample") else "")
+        + (" · logged late" if month.get("late") else ""),
+    ]
+    for h, tag in ((21, "h21 early read"), (h_main, f"h{h_main} (gate horizon)")):
+        s = month.get(f"h{h}")
+        if not s:
+            lines.append(f"- {tag}: not yet scoreable")
+            continue
+        parts = [f"rank IC {s['rank_ic']}", f"n_priced {s['n_priced']}"]
+        if s.get("decile_spread") is not None:
+            parts.append(f"decile spread {s['decile_spread']}")
+        if s.get("book_excess") is not None:
+            parts.append(f"book excess {s['book_excess']}")
+        lines.append(f"- {tag}: " + " · ".join(parts))
+    lines += [
+        "",
+        f"## Running gate ({rep.get('months_scored_oos')} OOS month(s) scored)",
+        "",
+        f"- live mean IC: {rep.get('live_mean_ic')} vs backtest expectation "
+        f"{base.get('expected_ic')} (baseline frozen {str(base.get('frozen_on', ''))[:10]})",
+        (f"- degradation: floor {rep.get('degradation_floor')} — "
+         + ("**DEGRADED**" if rep.get("degraded") else "on track"))
+        if rep.get("degraded") is not None else f"- degradation: {rep.get('note')}",
+        "",
+        "## Caveats (fixed, not tuned per month)",
+        "",
+        "- One month of IC is mostly noise — the gate requires "
+        "3 out-of-sample months for a reason; no conclusion is drawn here.",
+        "- The h21 read uses a shorter horizon than the model was gated on; "
+        "it is an early peek, never the verdict.",
+        f"- Label basis: {rep.get('label_basis')}.",
+        "- Returns are gross close-to-close — no cost or borrow modeling on "
+        "the live side.",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def write_month_reports(rep: dict, paper_dir: Path = PAPER_DIR,
+                        h_main: int = 63) -> dict:
+    """One ``reports/YYYY-MM.md`` per scoreable month, refreshed whenever the running
+    gate numbers change (each report embeds them). Idempotent: unchanged text is not
+    rewritten; months not yet scoreable are counted, never stubbed."""
+    out_dir = Path(paper_dir) / "reports"
+    written, unchanged, pending = [], 0, 0
+    for month in rep.get("months") or []:
+        # a report exists from the first scoreable horizon (the h21 early peek) and
+        # is refreshed in place when h63 grades — the caveats already frame h21
+        if not (month.get("h21") or month.get(f"h{h_main}")):
+            pending += 1
+            continue
+        name = f"{str(month.get('as_of', ''))[:7]}.md"
+        text = month_close_report(month, rep, h_main=h_main)
+        path = out_dir / name
+        if path.exists() and path.read_text() == text:
+            unchanged += 1
+            continue
+        out_dir.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(".md.tmp")
+        tmp.write_text(text)
+        os.replace(tmp, path)
+        written.append(name)
+    return {"written": written, "unchanged": unchanged, "pending": pending}
+
+
 def paper_progress_alerts(state, rep: dict) -> dict:
     """Turn a :func:`compare` report into ALERTS on progress, so the whole
     paper-forward exercise reaches the user instead of waiting to be looked at.
