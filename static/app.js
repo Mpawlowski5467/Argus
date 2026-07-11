@@ -59,7 +59,7 @@
     score: "The frozen model's raw output. Only its RANK against peers means anything — the magnitude has no unit and no dollar meaning.",
     shap: "SHAP splits this exact score into per-fundamental contributions that sum to it — which inputs pushed the rank up or down. An attribution of the rank, not a forecast.",
     signals: "Pre-computed fundamentals with sector percentiles. Each carries its own read (supports / detracts) decided by the pipeline — a HIGH percentile on a lower-is-better signal like leverage counts AGAINST the name.",
-    confidence: "How much to trust this call: 0–100, derived from how often this decile actually beat the market out-of-sample (the hit-rate shown beside it). Capped — never certainty.",
+    confidence: "How much to trust this call: 0–100, derived from how often this decile actually beat the median stock out-of-sample (the hit-rate shown beside it). Capped — never certainty.",
     distress: "A learned probability of distress or delisting within ~12 months, from a separate firewalled model. A display-only risk flag — never a trade input.",
     drawdownRisk: "A learned probability of a deep (~30%+) peak-to-trough fall within ~6 months. A display-only risk flag — never a trade input.",
     ic: "Prediction accuracy = rank correlation between predicted and realized returns for a month. 0 is a coin-flip; small positive numbers are normal — the sign and the trend matter, not the size.",
@@ -427,7 +427,7 @@
       var tone = c.score >= 55 ? "high" : c.score >= 25 ? "mid" : "low";
       var hr = c.hit_rate != null ? Math.round(c.hit_rate * 100) : null;
       var n = c.n ? " (n=" + Number(c.n).toLocaleString() + ")" : "";
-      var note = hr != null ? '<span class="conf-note">beat the market ' + hr + "% of the time OOS" + n + "</span>" : "";
+      var note = hr != null ? '<span class="conf-note">beat the median stock ' + hr + "% of the time OOS" + n + "</span>" : "";
       return '<span class="conf term ' + tone + '" data-g="confidence">confidence ' + c.score + "/100</span>" + note;
     },
     aiReadBlock: function (t, r) {

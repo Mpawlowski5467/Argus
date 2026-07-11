@@ -115,8 +115,68 @@ def test_hit_rate_and_n_pass_through():
     assert s["hit_rate"] == 0.58 and s["n"] == 1234
     assert 0 <= s["score"] <= CEILING
     assert set(s["components"]) == {
-        "edge", "conviction_base", "margin", "data_quality", "coherence", "downside_risk"
+        "basis", "t_excess", "edge", "conviction_base", "margin", "data_quality",
+        "coherence", "downside_risk"
     }
+    assert s["components"]["basis"] == "hit_rate"  # legacy artifact: no t_excess
+
+
+# --- t_excess anchor (magnitude-carried edge) ------------------------------------
+
+def tcal(t_excess, hit_rate=0.49, decile=10, n=1000) -> dict:
+    c = cal(hit_rate, decile, n)
+    c["deciles"][str(decile)]["t_excess"] = t_excess
+    return c
+
+
+def test_t_anchor_awards_buy_confidence_despite_sub_half_hit_rate():
+    """The real shape of this model's edge: decile 10 beats the median <50% of the
+    time but its AVERAGE excess is reliably positive — conviction must not be zero."""
+    s = score_confidence(10, 95, COHERENT, CLEAN, tcal(t_excess=2.0, hit_rate=0.49))
+    assert s["score"] > 0
+    assert s["components"]["basis"] == "t_excess"
+    assert s["hit_rate"] == 0.49  # the frequency truth still rides along
+
+
+def test_t_anchor_is_directional():
+    # wrong-direction average excess earns nothing, either side
+    assert score_confidence(10, 95, COHERENT, CLEAN, tcal(t_excess=-1.5))["score"] == 0
+    assert score_confidence(
+        1, 5, COHERENT, CLEAN, tcal(t_excess=1.5, hit_rate=0.43, decile=1))["score"] == 0
+    # AVOID side: reliably NEGATIVE mean excess is convincing
+    s = score_confidence(1, 5, COHERENT, CLEAN, tcal(t_excess=-6.0, hit_rate=0.43, decile=1))
+    assert s["score"] > 0
+
+
+def test_t_anchor_scales_and_caps():
+    weak = score_confidence(10, 95, COHERENT, CLEAN, tcal(t_excess=1.0))
+    strong = score_confidence(10, 95, COHERENT, CLEAN, tcal(t_excess=4.0))
+    extreme = score_confidence(10, 95, COHERENT, CLEAN, tcal(t_excess=40.0))
+    assert weak["score"] < strong["score"] <= extreme["score"] <= CEILING
+
+
+def test_hold_deciles_ignore_t_excess():
+    assert score_confidence(6, 60, COHERENT, CLEAN, tcal(t_excess=9.0, decile=6))["score"] == 0
+
+
+# --- production artifact regression (the 2026-07-11 BUY-dead bug) -----------------
+
+def test_production_calibration_not_buy_dead():
+    """Guards the live artifact shape: a top-decile BUY at a deep percentile must earn
+    nonzero confidence, and the AVOID side must stay strong. Skips when the local
+    artifact is absent (CI has no artifacts/)."""
+    from stockscan.confidence import CALIBRATION_PATH, load_calibration_optional
+
+    calib = load_calibration_optional(CALIBRATION_PATH)
+    if calib is None:
+        pytest.skip("no local calibration artifact")
+    buy = score_confidence(10, 95, COHERENT, CLEAN, calib)
+    avoid = score_confidence(1, 5, COHERENT, CLEAN, calib)
+    assert buy is not None and avoid is not None
+    assert buy["score"] > 0, "BUY side of confidence is dead again"
+    assert avoid["score"] > 0
+    assert avoid["score"] >= buy["score"]  # this model's edge is avoid-heavier; if this
+    # ever flips it is worth a fresh look at the calibration, not a silent pass
 
 
 # --- artifact I/O ---------------------------------------------------------------
