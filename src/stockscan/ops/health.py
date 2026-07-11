@@ -232,6 +232,26 @@ def run_checks(today=None, prices_dir: Path = PRICES_DIR) -> list[Check]:
     return checks
 
 
+def health_record(checks: list[Check], prev_failing: set[str], add_alert) -> dict:
+    """Turn one health screen into the job-deltas payload the nightly stores, alerting
+    (via ``add_alert(kind, message)``) ONLY on newly-failing criticals: a persistent
+    failure alerts once, and a recover-then-refail alerts again. ``prev_failing`` is
+    the previous stored record's ``critical_failing`` — the caller must capture it
+    BEFORE opening its own job row (the fresh 'running' row has empty deltas and
+    would make every failure look new)."""
+    failing = sorted(c.name for c in checks if c.level == "critical" and not c.ok)
+    for name in failing:
+        if name not in prev_failing:
+            detail = next(c.detail for c in checks if c.name == name)
+            add_alert("health_critical", f"health: {name} critical — {detail}")
+    return {
+        "checks": [{"level": c.level, "name": c.name, "ok": c.ok, "detail": c.detail}
+                   for c in checks],
+        "critical_failing": failing,
+        "_status": "degraded" if failing else "ok",
+    }
+
+
 def report(checks: list[Check]) -> tuple[str, int]:
     """Human-readable table + exit code (1 if any critical check failed)."""
     lines = []

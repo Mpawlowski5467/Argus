@@ -69,6 +69,13 @@ create table if not exists book (
     exited_as_of text,
     active integer not null default 1
 );
+create table if not exists kv (
+    -- small operational singletons (e.g. the stored overnight brief): JSON values,
+    -- last-write-wins, never history — job_runs is the history trail
+    key text primary key,
+    value text not null,
+    updated text not null
+);
 create table if not exists positions (
     -- PERSONAL holdings the user records to see value & P/L. Live-view display data:
     -- read back to the user only, NEVER an input to the score / paper book / backtest.
@@ -123,6 +130,34 @@ class OpsState:
             (_utcnow(), status, json.dumps(deltas or {}, default=str), run_id),
         )
         self._db.commit()
+
+    def recent_runs(self, limit: int = 30) -> list[dict]:
+        """Newest-first job history (no deltas — the strip wants statuses, not JSON)."""
+        rows = self._db.execute(
+            "select id, job, started, finished, status from job_runs "
+            "order by id desc limit ?", (limit,)).fetchall()
+        return [{"id": r[0], "job": r[1], "started": r[2], "finished": r[3],
+                 "status": r[4]} for r in rows]
+
+    # -- kv singletons -----------------------------------------------------------
+    def kv_set(self, key: str, value: dict) -> None:
+        self._db.execute(
+            "insert into kv (key, value, updated) values (?,?,?) "
+            "on conflict(key) do update set value = excluded.value, "
+            "updated = excluded.updated",
+            (key, json.dumps(value, default=str), _utcnow()),
+        )
+        self._db.commit()
+
+    def kv_get(self, key: str) -> dict | None:
+        row = self._db.execute(
+            "select value, updated from kv where key = ?", (key,)).fetchone()
+        if row is None:
+            return None
+        out = json.loads(row[0])
+        if isinstance(out, dict):
+            out.setdefault("_updated", row[1])
+        return out
 
     def reap_stale_runs(self, max_age_hours: float = 24.0) -> list[dict]:
         """Mark job_runs stuck in 'running' longer than ``max_age_hours`` as 'aborted'.

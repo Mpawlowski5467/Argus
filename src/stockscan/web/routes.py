@@ -363,6 +363,16 @@ def explain_move(cik: int, body: dict):
         return convert.jsonable(a.move_answer(cik, horizon, bundle))
 
 
+# -- system health (the nightly's stored screen + job history) ----------------
+@router.get("/health")
+def health():
+    """Last stored health screen + recent job strip. Read-only: the checks are run
+    by the nightly (they probe the web UI and LLM — a live re-run here would
+    self-probe), so a stale as_of is itself the signal that ops has stalled."""
+    a = _facade()
+    return convert.jsonable(_safe(lambda: a.health(), {}))
+
+
 # -- overnight digest (deterministic card; grounded LLM brief on demand) ------
 @router.get("/digest")
 def digest():

@@ -633,13 +633,44 @@ class ArgusData:
                      ("months_scored_oos", "live_mean_ic", "degraded", "note")
                      if k in paper}
         with OpsState() as st:
-            return build_brief_context(st, paper=paper)
+            ctx = build_brief_context(st, paper=paper)
+            stored = st.kv_get("digest_brief")
+        # the nightly pre-generates the brief (ops.py job_digest) — ship it with the
+        # card when fresh so the page opens with prose instead of a button; stale
+        # briefs (>24h — a skipped night) are withheld rather than shown as current
+        if stored and stored.get("answer") and stored.get("_updated"):
+            age_h = (pd.Timestamp.now("UTC")
+                     - pd.Timestamp(stored["_updated"])).total_seconds() / 3600
+            if age_h <= 24:
+                ctx["stored_brief"] = {"answer": stored["answer"],
+                                       "updated": stored["_updated"]}
+        return ctx
 
     def digest_brief(self, llm=None) -> dict:
         """The grounded LLM morning brief over :meth:`digest` (refuses over inventing)."""
         from ..assist.brief import nightly_brief
 
         return nightly_brief(self.digest(), llm or self._chat_llm())
+
+    def health(self) -> dict:
+        """The last stored health screen + a recent job strip — read-only over the ops
+        record. The checks are the NIGHTLY's (run_checks probes the web UI and LLM;
+        re-running them inside a web request would have the server probe itself), so
+        ``as_of`` matters: an old record means the nightly hasn't run, which is itself
+        a health signal the UI should show."""
+        from ..ops.state import OpsState
+
+        with OpsState() as st:
+            last = st.last_run("health")
+            runs = st.recent_runs(limit=24)
+        deltas = (last or {}).get("deltas") or {}
+        return {
+            "as_of": (last or {}).get("finished"),
+            "status": (last or {}).get("status"),
+            "checks": deltas.get("checks") or [],
+            "critical_failing": deltas.get("critical_failing") or [],
+            "runs": runs,
+        }
 
     def watched_ciks(self) -> list[int]:
         """Just the watched CIKs — the scan page's star column wants a cheap set,

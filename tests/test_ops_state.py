@@ -22,6 +22,25 @@ def test_job_run_logging(state):
     assert state.last_run("universe") is None
 
 
+def test_kv_roundtrip_and_overwrite(state):
+    assert state.kv_get("digest_brief") is None
+    state.kv_set("digest_brief", {"answer": "quiet night"})
+    got = state.kv_get("digest_brief")
+    assert got["answer"] == "quiet night" and got["_updated"]
+    state.kv_set("digest_brief", {"answer": "busy night"})
+    assert state.kv_get("digest_brief")["answer"] == "busy night"   # last write wins
+
+
+def test_recent_runs_newest_first(state):
+    a = state.job_start("prices")
+    state.job_finish(a, "ok")
+    b = state.job_start("monitor")
+    state.job_finish(b, "degraded")
+    runs = state.recent_runs(limit=10)
+    assert [r["job"] for r in runs] == ["monitor", "prices"]
+    assert runs[0]["status"] == "degraded" and runs[1]["finished"]
+
+
 def test_reap_stale_runs_aborts_only_old_running_rows(state):
     # a stranded row from a killed process, backdated past the age guard
     old_id = state.job_start("prices")
