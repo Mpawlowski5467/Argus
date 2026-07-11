@@ -8,7 +8,6 @@ pytest.importorskip("fastapi")
 
 from fastapi.testclient import TestClient  # noqa: E402
 
-from stockscan.web import routes  # noqa: E402
 from stockscan.web.state import STATE  # noqa: E402
 
 

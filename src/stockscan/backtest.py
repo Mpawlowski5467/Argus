@@ -237,6 +237,7 @@ def run_backtest(
     short_book: set = set()
     w = pd.Series(dtype=float)          # current weights (NAV-relative at entry)
     entry_px = pd.Series(dtype=float)   # execution prices backing ``w``
+    prev_pos = events[0][1]             # bar of the last rebalance (borrow-night count)
     nav, nav_gross = 1.0, 1.0
     borrow_daily, wiped = 0.0, False
     navs: dict[pd.Timestamp, float] = {idx[events[0][1] - 1]: 1.0}   # inception point

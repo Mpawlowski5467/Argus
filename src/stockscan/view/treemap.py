@@ -63,7 +63,6 @@ def _squarify(sizes, x, y, dx, dy):
     if not sizes:
         return []
     horizontal = dx >= dy
-    length = dy if horizontal else dx
     if len(sizes) == 1:
         return _layout_row(sizes, x, y, dx, dy, horizontal)
     i = 1

@@ -16,7 +16,6 @@ the return artifact, the serve path, or any trade rule.
 import argparse
 
 import duckdb
-import numpy as np
 import pandas as pd
 from sklearn.metrics import roc_auc_score
 

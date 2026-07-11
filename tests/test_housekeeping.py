@@ -4,7 +4,6 @@ and the frozen-head staleness check."""
 import json
 import sqlite3
 
-import pandas as pd
 
 from stockscan.ops.health import head_staleness
 from stockscan.ops.housekeeping import backup_stores, rotate_logs
