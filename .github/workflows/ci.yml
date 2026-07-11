@@ -1,0 +1,23 @@
+# The suite is hermetic: it passes with no data/, no artifacts/, and no Intrinio key
+# (verified in a clean worktree 2026-07-11; the one production-artifact test skips
+# itself when artifacts/ is absent). This gate is what makes the firewall import scan
+# (tests/test_assist.py) an enforced guarantee instead of a local habit.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"   # enforce the >=3.12,<3.13 pin
+          enable-cache: true
+      - run: uv sync --all-extras
+      - run: uv run ruff check src scripts tests
+      - run: uv run pytest -q
