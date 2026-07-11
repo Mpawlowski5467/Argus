@@ -310,3 +310,19 @@ def test_driver_directions_enter_expected_and_template():
     assert "supported by Return on assets" in r["narrative"]
     assert "held back by Leverage" in r["narrative"]
     assert {"id": "driver:roa", "direction": "supports"} in r["citations"]
+
+
+def test_make_llm_tiers():
+    """The factory is the ONE construction seam: chat is capped + reasoning-off,
+    narration tiers stay uncapped, unknown tiers are loud."""
+    import pytest
+
+    from stockscan.config import LLM_CHAT_MAX_TOKENS, LLM_LIGHT_MODEL, LLM_MODEL
+    from stockscan.narrate.llm import make_llm
+
+    full, light, chat = make_llm("full"), make_llm("light"), make_llm("chat")
+    assert full.model == LLM_MODEL and full.max_tokens is None
+    assert light.model == LLM_LIGHT_MODEL and light.max_tokens is None
+    assert chat.max_tokens == LLM_CHAT_MAX_TOKENS
+    with pytest.raises(ValueError):
+        make_llm("cloud")   # no cloud tier exists, by decision

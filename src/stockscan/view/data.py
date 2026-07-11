@@ -465,9 +465,8 @@ class ArgusData:
         hash by design, so headline churn never busts the cache. A dead LLM
         endpoint degrades to the grounded template inside narrate_packet (never
         crashes) and narrate_smart keeps that out of the cache."""
-        from ..config import LLM_LIGHT_MODEL
         from ..narrate.cache import NarrationCache, narrate_smart
-        from ..narrate.llm import LocalLLM
+        from ..narrate.llm import make_llm
         from ..narrate.packet import news_context
 
         ctx = news_context(self._news_context(int(packet["meta"]["cik"])))
@@ -477,8 +476,8 @@ class ArgusData:
         if own:   # short-lived connection per call, like every DB touch on this facade
             cache = NarrationCache()
         try:
-            res = narrate_smart(packet, llm_full=llm_full or LocalLLM(),
-                                llm_light=llm_light or LocalLLM(model=LLM_LIGHT_MODEL),
+            res = narrate_smart(packet, llm_full=llm_full or make_llm("full"),
+                                llm_light=llm_light or make_llm("light"),
                                 cache=cache)
         finally:
             if own:
@@ -489,20 +488,12 @@ class ArgusData:
 
     @staticmethod
     def _chat_llm():
-        """The interactive-chat client: independently swappable model, hard token
-        cap, short timeout (config LLM_CHAT_*). Grounding checks every numeral no
+        """The interactive-chat client (make_llm 'chat' tier): independently swappable
+        model, hard token cap, short timeout. Grounding checks every numeral no
         matter the model, so a smaller/faster one loses polish, not honesty."""
-        from ..config import (
-            LLM_CHAT_MAX_TOKENS,
-            LLM_CHAT_MODEL,
-            LLM_CHAT_REASONING,
-            LLM_CHAT_TIMEOUT,
-        )
-        from ..narrate.llm import LocalLLM
+        from ..narrate.llm import make_llm
 
-        return LocalLLM(model=LLM_CHAT_MODEL, timeout=LLM_CHAT_TIMEOUT,
-                        max_tokens=LLM_CHAT_MAX_TOKENS,
-                        reasoning_effort=LLM_CHAT_REASONING)
+        return make_llm("chat")
 
     def chat_context(self, cik: int) -> dict:
         """The EXACT grounding context the ticker 'ask' hands the chat model: the

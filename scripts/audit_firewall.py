@@ -40,10 +40,10 @@ def main() -> int:
         if not diff.strip():
             print("\nLLM diff review: (empty diff — nothing to review)")
         else:
-            from stockscan.narrate.llm import LocalLLM
+            from stockscan.narrate.llm import make_llm
 
             print("\nLLM diff review (subtler firewall / look-ahead leaks) ...")
-            result = firewall_review_diff(diff, LocalLLM())
+            result = firewall_review_diff(diff, make_llm("full"))
             issues = result["issues"]
             if not issues:
                 print("  no issues reported by the model review.")

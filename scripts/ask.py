@@ -14,7 +14,7 @@ import argparse
 
 from stockscan.assist.qa import answer_from_packet
 from stockscan.model import load_artifact
-from stockscan.narrate.llm import LocalLLM
+from stockscan.narrate.llm import make_llm
 from stockscan.narrate.packet import news_context
 from stockscan.serve import analyze, load_serve_data, resolve_company
 
@@ -44,7 +44,7 @@ def main() -> int:
     news = None if args.no_news else news_context(_recall_news(cik))
     res = analyze(cik, as_of=args.as_of, data=data, artifact=artifact, llm=None, news=news)
     packet = res["packet"]
-    llm = LocalLLM()
+    llm = make_llm("chat")   # same capped client as the web ask surfaces
 
     m = packet["meta"]
     n_news = len(packet.get("context", {}).get("news", []))

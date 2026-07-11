@@ -145,9 +145,8 @@ def job_news(state: OpsState, no_llm: bool = False, backfill: int = 0) -> dict:
     missing the current version. ``backfill=N`` instead paginates N pages of history per
     name to SEED the memory so recall's 'notable past' has depth on day one. Runs
     independent of price freshness — news is firewalled from the signal."""
-    from stockscan.config import LLM_LIGHT_MODEL
     from stockscan.intrinio_universe import load_universe
-    from stockscan.narrate.llm import LocalLLM
+    from stockscan.narrate.llm import make_llm
     from stockscan.newsmem import (
         NewsStore,
         backfill_watchlist,
@@ -160,7 +159,7 @@ def job_news(state: OpsState, no_llm: bool = False, backfill: int = 0) -> dict:
     if not wl:
         return _run_logged(state, job, lambda: {"noop": True, "note": "empty watchlist"})
     targets = watchlist_targets(wl, load_universe())
-    llm = None if no_llm else LocalLLM(model=LLM_LIGHT_MODEL)
+    llm = None if no_llm else make_llm("light")
 
     def _run() -> dict:
         with NewsStore() as store:
@@ -233,19 +232,11 @@ def job_digest(state: OpsState) -> dict:
     pass, and store it so the web digest card opens instantly. Fail-open: a down or
     refusing LLM stores nothing and the card falls back to on-demand generation."""
     from stockscan.assist.brief import build_brief_context, nightly_brief
-    from stockscan.config import (
-        LLM_CHAT_MAX_TOKENS,
-        LLM_CHAT_MODEL,
-        LLM_CHAT_REASONING,
-        LLM_CHAT_TIMEOUT,
-    )
-    from stockscan.narrate.llm import LocalLLM
+    from stockscan.narrate.llm import make_llm
 
     def _run() -> dict:
         ctx = build_brief_context(state)
-        llm = LocalLLM(model=LLM_CHAT_MODEL, timeout=LLM_CHAT_TIMEOUT,
-                       max_tokens=LLM_CHAT_MAX_TOKENS, reasoning_effort=LLM_CHAT_REASONING)
-        res = nightly_brief(ctx, llm)
+        res = nightly_brief(ctx, make_llm("chat"))
         if res.get("refused") or not res.get("answer"):
             return {"stored": False, "refused": bool(res.get("refused")),
                     "_status": "degraded"}
@@ -258,8 +249,7 @@ def job_digest(state: OpsState) -> dict:
 
 def job_monitor(state: OpsState, no_llm: bool = False, edgar: bool = True,
                 alerts_ok: bool = True) -> dict:
-    from stockscan.narrate.llm import LocalLLM
-    from stockscan.config import LLM_LIGHT_MODEL
+    from stockscan.narrate.llm import make_llm
     from stockscan.ops.monitor import run_monitor
 
     # A degraded price night (alerts_ok=False) also disables narration: a
@@ -267,8 +257,8 @@ def job_monitor(state: OpsState, no_llm: bool = False, edgar: bool = True,
     # a full-tier narration would cache against that wrong percentile and reset the
     # materiality baseline. Template runs never cache, so no_llm here is safe.
     use_llm = not no_llm and alerts_ok
-    llm_full = LocalLLM() if use_llm else None
-    llm_light = LocalLLM(model=LLM_LIGHT_MODEL) if use_llm else None
+    llm_full = make_llm("full") if use_llm else None
+    llm_light = make_llm("light") if use_llm else None
     return _run_logged(state, "monitor", run_monitor, state,
                        llm_full=llm_full, llm_light=llm_light,
                        narrate=True, edgar=edgar, alerts_ok=alerts_ok)
@@ -451,11 +441,12 @@ def main(argv=None) -> int:
 
     if args.cmd == "digest":
         from stockscan.assist.brief import build_brief_context, nightly_brief
-        from stockscan.narrate.llm import LocalLLM
+        from stockscan.narrate.llm import make_llm
 
         with OpsState() as state:
             ctx = build_brief_context(state)
-        print(nightly_brief(ctx, LocalLLM())["answer"])
+        # chat tier: capped + reasoning-off — same client the web digest card uses
+        print(nightly_brief(ctx, make_llm("chat"))["answer"])
         return 0
 
     if args.cmd == "install-launchd":

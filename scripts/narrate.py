@@ -11,7 +11,7 @@ Local LLM: point STOCKSCAN_LLM_URL / STOCKSCAN_LLM_MODEL at Ollama or llama.cpp/
 import argparse
 import json
 
-from stockscan.narrate.llm import LocalLLM
+from stockscan.narrate.llm import make_llm
 from stockscan.narrate.narrator import narrate
 
 
@@ -23,7 +23,7 @@ def main() -> int:
     args = ap.parse_args()
 
     company = int(args.company) if args.company.isdigit() else args.company
-    llm = None if args.no_llm else LocalLLM()
+    llm = None if args.no_llm else make_llm("full")
     try:
         result = narrate(company, llm=llm)
     except Exception as exc:  # LLM endpoint unreachable -> deterministic template
