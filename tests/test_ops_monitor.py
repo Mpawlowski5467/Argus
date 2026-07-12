@@ -146,6 +146,70 @@ def test_distress_escalation_alerts_once_then_stays_quiet(world, tmp_path):
         assert len(d2) == 1
 
 
+def _data_with_drawdown(world, tmp_path):
+    """world['data'] plus a FIREWALLED drawdown artifact scoring everything ~high —
+    enough to exercise the enter-'high' escalation plumbing."""
+    from stockscan.drawdown import (
+        fit_drawdown,
+        load_drawdown_artifact,
+        save_drawdown_artifact,
+    )
+
+    raw = world["raw"]
+    close, dv = _prices()
+    tmap = {cik: f"T{cik}" for cik in range(1, 46)}
+    panel = build_fundamental_panel(
+        raw, close, delistings=None, ticker_map=tmap, dollar_volume=dv,
+        min_dollar_volume=MIN_DV, horizon=HORIZON, min_names=5)
+    panel = panel.copy()
+    # heavily positive labels -> the toy model scores broadly high (crosses 0.70)
+    panel["y"] = (np.arange(len(panel)) % 10 != 0).astype(float)
+    panel.attrs["censor_date"] = panel["date"].max()
+    panel.attrs["horizon_months"] = 6
+    panel.attrs["threshold"] = -0.30
+    wmodel = fit_drawdown(panel, params=dict(n_estimators=15, min_child_samples=5))
+    wart = load_drawdown_artifact(save_drawdown_artifact(wmodel, panel, out_dir=tmp_path / "w"))
+    return ServeData(feats=prepare_features(raw), close=close,
+                     dv_med=dv.rolling(20, min_periods=10).median(), ticker_map=tmap,
+                     drawdown_artifact=wart)
+
+
+def test_drawdown_escalation_alerts_only_on_entering_high(world, tmp_path):
+    data = _data_with_drawdown(world, tmp_path)
+    with OpsState(tmp_path / "s.sqlite") as state:
+        state.watch_add(1, "T1")
+        state.record_signal(1, 50, 5, "2024-08-30", drawdown=0.0)  # prior = normal
+        run_monitor(state, data=data, artifact=world["artifact"],
+                    narrate=False, edgar=False, as_of="2024-09-30")
+        w1 = [a for a in state.alerts(unseen_only=False) if a["kind"] == "drawdown_risk"]
+        assert len(w1) == 1
+        assert "not a trade signal" in w1[0]["message"]
+        assert state.get_signal(1)["drawdown"] is not None       # level now recorded
+        # identical second run: already high, no repeat
+        run_monitor(state, data=data, artifact=world["artifact"],
+                    narrate=False, edgar=False, as_of="2024-09-30")
+        w2 = [a for a in state.alerts(unseen_only=False) if a["kind"] == "drawdown_risk"]
+        assert len(w2) == 1
+
+
+def test_drawdown_entering_elevated_stays_silent(world, tmp_path):
+    """39.5% base rate: 'elevated' is too common to interrupt for — chip only.
+    Seed the prior BETWEEN the elevated/high thresholds; if the toy model scores
+    below high, no alert may fire (and none may fire on de-escalation either)."""
+    from stockscan.drawdown import drawdown_flag
+
+    data = _data_with_drawdown(world, tmp_path)
+    with OpsState(tmp_path / "s.sqlite") as state:
+        state.watch_add(1, "T1")
+        # prior already high: staying high or falling back must both be silent
+        state.record_signal(1, 50, 5, "2024-08-30", drawdown=0.75)
+        run_monitor(state, data=data, artifact=world["artifact"],
+                    narrate=False, edgar=False, as_of="2024-09-30")
+        assert [a for a in state.alerts(unseen_only=False)
+                if a["kind"] == "drawdown_risk"] == []
+        assert drawdown_flag(0.60) == "elevated"    # the level the alert ignores
+
+
 def test_distress_alert_suppressed_when_degraded(world, tmp_path):
     data = _data_with_distress(world, tmp_path)
     with OpsState(tmp_path / "s.sqlite") as state:

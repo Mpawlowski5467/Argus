@@ -30,6 +30,15 @@ from .sector import sic_division
 PRICE_FEATURES = ["mom_12_1", "mom_6_1"]
 EXTRA_PRICE_FEATURES = ["st_rev", "low_vol", "amihud"]
 
+# Value features (EXPERIMENT plumbing, default-off like the price features): classic
+# yields from true point-in-time market cap = UNADJUSTED close (as-of date) x PIT
+# shares from the filing itself. Need the raw statement values + shares to survive
+# prepare_features, and an unadjusted-close matrix passed as ``value_price`` — the
+# adjusted close would scale cap by future splits (the exact trap the prior flat
+# value gate fell into via proxy caps).
+VALUE_FEATURES = ["ep", "bm", "sp"]
+VALUE_RAWS = ("net_income", "equity", "revenue", "shares")
+
 # Imputed terminal return by ledger reason, sourced from the locked config decision
 # (DESIGN.md §10): Form 15 deregistration ("dereg") = going-dark -> -1.00; Form 25/25-NSE
 # exchange delisting ("delist") -> distress haircut when no price survives. Injectable so
@@ -41,14 +50,19 @@ REASON_RETURN = {"delist": DELISTING_RETURN["distress"], "dereg": DELISTING_RETU
 # The panel build below and the serve path (stockscan.serve) both go through these
 # four functions. Any feature-shaping logic added elsewhere breaks the parity test.
 
-def prepare_features(features_df: pd.DataFrame) -> pd.DataFrame:
-    """Availability + sector prep shared by the TRAIN (panel) and SERVE paths."""
+def prepare_features(features_df: pd.DataFrame, extra_cols: tuple = ()) -> pd.DataFrame:
+    """Availability + sector prep shared by the TRAIN (panel) and SERVE paths.
+
+    ``extra_cols`` lets an experiment carry additional per-filing columns (e.g. the
+    raw statement values + shares behind the value features) through the pruning —
+    default empty, so the production paths are byte-identical."""
     feats = features_df.copy()
     feats["available_date"] = available_date(feats["filed_date"])
     feats["sector"] = feats["sic"].map(sic_division)
     feats = feats.dropna(subset=["available_date"]).sort_values("available_date")
     meta_cols = [c for c in ("cik", "name", "fy", "sic", "period_end") if c in feats.columns]
-    return feats[[*meta_cols, "filed_date", "available_date", "sector", *FEATURES]]
+    extras = [c for c in extra_cols if c in feats.columns and c not in FEATURES]
+    return feats[[*meta_cols, "filed_date", "available_date", "sector", *FEATURES, *extras]]
 
 
 def pit_snapshot(feats: pd.DataFrame, as_of, max_stale_days: int = MAX_STALE_DAYS) -> pd.DataFrame:
@@ -166,6 +180,7 @@ def build_fundamental_panel(
     min_price: float = 1.0,
     winsorize: tuple[float, float] | None = None,
     price_features: bool = False,
+    value_price: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     reason_return = reason_return or REASON_RETURN
     c2t = ticker_map if ticker_map is not None else cik_to_ticker()
@@ -176,7 +191,15 @@ def build_fundamental_panel(
         price_feature_names = PRICE_FEATURES
     else:
         price_feature_names = []
-    rank_features = FEATURES + price_feature_names
+    # Value features (default-off): need the raw statement values + shares on the
+    # filing rows AND an unadjusted close matrix. Enabled only when both exist.
+    value_feature_names = []
+    if value_price is not None:
+        missing = [c for c in VALUE_RAWS if c not in features_df.columns]
+        if missing:
+            raise ValueError(f"value_price given but features_df lacks {missing}")
+        value_feature_names = list(VALUE_FEATURES)
+    rank_features = FEATURES + price_feature_names + value_feature_names
     mom_mats = price_feature_matrices(close, dollar_volume, price_feature_names) \
         if price_feature_names else None
     dmap = {}
@@ -184,7 +207,8 @@ def build_fundamental_panel(
         for cik, dd, reason in zip(delistings["cik"], delistings["delist_date"], delistings["reason"]):
             dmap[int(cik)] = (pd.Timestamp(dd), reason)
 
-    feats = prepare_features(features_df)
+    feats = prepare_features(features_df,
+                             extra_cols=VALUE_RAWS if value_feature_names else ())
 
     # Terminal-aware label: a name that stops trading inside the window is labeled
     # with its real last-trade return, so (with delisted-inclusive prices) death
@@ -232,6 +256,18 @@ def build_fundamental_panel(
         # then are ranked through the same add_sector_ranks the fundamentals use.
         if mom_mats is not None:
             latest = attach_price_features(latest, d, mom_mats)
+
+        # Value yields as-of d: cap = unadjusted close x PIT shares from the filing
+        # row itself. A name with no unadjusted print or no shares gets NaN — ranked
+        # like any other missing fundamental, never imputed.
+        if value_feature_names:
+            px = latest["ticker"].map(value_price.loc[d]) \
+                if d in value_price.index else np.nan
+            cap = px * latest["shares"]
+            with np.errstate(divide="ignore", invalid="ignore"):
+                latest["ep"] = np.where(cap > 0, latest["net_income"] / cap, np.nan)
+                latest["bm"] = np.where(cap > 0, latest["equity"] / cap, np.nan)
+                latest["sp"] = np.where(cap > 0, latest["revenue"] / cap, np.nan)
 
         # Ranks over the full known-at-date universe, BEFORE the label drop (the serve
         # path ranks the identical universe -- there are no labels at serve time).

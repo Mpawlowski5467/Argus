@@ -143,6 +143,7 @@ def run_monitor(
     """One monitoring pass. Returns the deltas dict for the job log."""
     from ..config import PAPER_DIR
     from ..distress import distress_flag
+    from ..drawdown import drawdown_flag
     from ..model import MODEL_DIR, load_artifact
     from ..narrate.cache import NarrationCache, narrate_smart
     from ..serve import analyze, load_serve_data
@@ -245,8 +246,28 @@ def run_monitor(
                         payload={"from": prev_lvl, "to": dz["flag"], "prob": dz["prob"]},
                     )
                     deltas["alerts"] += 1
+            # drawdown escalation mirrors distress, with one extra gate: alert ONLY on
+            # entering "high" (the 39.5% base rate makes "elevated" too common to
+            # interrupt for — it stays a chip in the UI). Same first-sight silence,
+            # same never-on-de-escalation, same display-only framing.
+            wz = res.get("drawdown")   # FIREWALLED risk-flag block (or None)
+            if wz is not None and prev is not None:
+                prev_wprob = prev.get("drawdown")
+                prev_wlvl = drawdown_flag(prev_wprob) if prev_wprob is not None else "normal"
+                if wz["flag"] == "high" and _LEVEL[prev_wlvl] < _LEVEL["high"]:
+                    state.add_alert(
+                        "drawdown_risk",
+                        f"cik {cik} ({res['column'] or 'no column'}): drawdown-risk flag "
+                        f"{prev_wlvl} -> high (P≈{wz['prob'] * 100:.0f}% of a "
+                        f"{wz['threshold'] * 100:.0f}% fall within {wz['horizon_months']}mo) "
+                        f"[risk-flag only, not a trade signal]" + _held_note(weights, cik),
+                        cik=cik,
+                        payload={"from": prev_wlvl, "to": "high", "prob": wz["prob"]},
+                    )
+                    deltas["alerts"] += 1
             state.record_signal(cik, pct, res["decile"], str(as_of.date()),
-                                distress=(dz["prob"] if dz else None))
+                                distress=(dz["prob"] if dz else None),
+                                drawdown=(wz["prob"] if wz else None))
 
         if narrate:
             # scan.py's pattern: the packet from analyze(llm=None) carries the
