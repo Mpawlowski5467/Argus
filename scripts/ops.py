@@ -90,7 +90,7 @@ def _universe_due(state: OpsState) -> bool:
         anchor = pd.Timestamp(os.stat(UNIVERSE_PATH).st_mtime, unit="s")
     else:
         return True
-    return (pd.Timestamp.utcnow().tz_localize(None) - anchor).days >= UNIVERSE_DUE_DAYS
+    return (pd.Timestamp.now("UTC").tz_localize(None) - anchor).days >= UNIVERSE_DUE_DAYS
 
 
 def job_universe(state: OpsState) -> dict:
@@ -202,10 +202,11 @@ def job_paper_check(state: OpsState) -> dict:
 
 
 def job_backup(state: OpsState) -> dict:
-    """SQLite-store backups + log rotation (see ops/housekeeping.py)."""
-    from stockscan.ops.housekeeping import backup_stores, rotate_logs
+    """SQLite-store + frozen-artifact backups + log rotation (see ops/housekeeping.py)."""
+    from stockscan.ops.housekeeping import backup_artifacts, backup_stores, rotate_logs
 
     _run_logged(state, "rotate_logs", rotate_logs)
+    _run_logged(state, "backup_artifacts", backup_artifacts)
     return _run_logged(state, "backup", backup_stores)
 
 
@@ -229,6 +230,10 @@ def job_monitor(state: OpsState, no_llm: bool = False, edgar: bool = True,
 
 def job_nightly(state: OpsState, no_llm: bool = False) -> int:
     """The scheduler entry: each stage self-checks whether it is due."""
+    reaped = state.reap_stale_runs()
+    if reaped:
+        print(f"[reap] {len(reaped)} stranded 'running' row(s) marked aborted: "
+              + ", ".join(sorted({r['job'] for r in reaped})))
     deltas = job_prices(state)
     checked = max(1, deltas.get("active_columns", 1))
     # degraded if too many columns failed OR the heartbeat column itself failed

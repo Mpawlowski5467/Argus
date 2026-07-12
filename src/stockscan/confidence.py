@@ -2,10 +2,12 @@
 
 This is not a second model. It is a transparent read of the return model's own
 out-of-sample track record: an offline calibration artifact records, per prediction
-decile, how often that decile ACTUALLY beat the cross-section OOS (its ``hit_rate``).
-At serve time :func:`score_confidence` turns that hit-rate into a 0-100 conviction and
-bounds it by how deep the name sits in its zone, the data quality, and whether the SHAP
-drivers agree — never letting the number imply a certainty the small edge (IC ~0.03-0.05)
+decile, how often that decile ACTUALLY beat the per-date median name OOS (its
+``hit_rate``, shown to the user) and how statistically reliable its average OOS excess
+is (``t_excess``, a Newey-West t over per-date means — the conviction anchor). At serve
+time :func:`score_confidence` turns that evidence into a 0-100 conviction and bounds it
+by how deep the name sits in its zone, the data quality, and whether the SHAP drivers
+agree — never letting the number imply a certainty the small edge (IC ~0.03-0.05)
 cannot support.
 
 FIREWALL: like the distress head, confidence is display/risk ONLY. It reads the frozen
@@ -27,9 +29,15 @@ CALIBRATION_DIR = ARTIFACTS_DIR / "confidence_cal"
 CALIBRATION_PATH = CALIBRATION_DIR / "calibration.json"
 
 # --- honesty knobs --------------------------------------------------------------
-# A decile that beat the cross-section 60% of the time (edge 0.10) reads as full base
-# conviction; nothing beyond that raises it. Given the model's true edge is small, the
-# ceiling caps the displayed number well under "certain" no matter how the modifiers land.
+# Conviction anchors to the calibration's ``t_excess`` — the Newey-West t-stat of the
+# decile's per-date mean OOS excess, signed in the call's direction. t >= T_FULL reads
+# as full base conviction (t~4-6 is where the model's own gate evidence lives); t <= 0
+# is none. Frequency alone cannot anchor BUYs: the top decile's edge is magnitude-
+# carried (hit-rate ~0.49, mean excess +), so a hit-rate anchor zeroes the whole side.
+# Legacy artifacts without ``t_excess`` fall back to the directional hit-rate edge,
+# where beating the median 60% of the time (edge 0.10) is full conviction. The ceiling
+# caps the displayed number well under "certain" no matter how the modifiers land.
+T_FULL = 4.0
 EDGE_FULL = 0.10
 CEILING = 85
 
@@ -141,10 +149,14 @@ def score_confidence(
 ) -> dict | None:
     """Derive a 0-100 confidence for one name's call. ``None`` when it cannot be grounded.
 
-    The number is anchored on the decile's directional edge (|hit_rate - 0.5|) from the
-    calibration table, then bounded by margin / data-quality / coherence and capped at
-    ``CEILING``. The raw ``hit_rate`` + sample size ride along so a caller can always show
-    the track record the number is built from.
+    The number is anchored on the decile's DIRECTIONAL edge from the calibration table
+    (BUY deciles need hit_rate above 0.5, AVOID deciles below), then bounded by margin /
+    data-quality / coherence and capped at ``CEILING``. The calibration's ``hit_rate``
+    must therefore be a 0.5-centered statistic — P(beat the per-date cross-sectional
+    median) — or one whole side goes dead: the older mean-anchored P(excess > 0) sat
+    below 0.5 even for decile 10 under right-skewed excess returns, zeroing every BUY.
+    The raw ``hit_rate`` + sample size ride along so a caller can always show the track
+    record the number is built from.
     """
     if not calibration or decile is None:
         return None
@@ -153,20 +165,28 @@ def score_confidence(
         return None
 
     hit_rate = float(stats["hit_rate"])
-    # Directional, not absolute: a BUY-side decile is convincing only when names in
-    # that decile beat the cross-section more than half the time; an AVOID-side
-    # decile is convincing only when they beat it less than half the time. HOLD
-    # deciles deliberately earn no directional confidence — the model has no strong
-    # call there. Using ``abs(hit_rate - 0.5)`` would falsely award confidence to a
-    # top-decile BUY bucket whose hit-rate is below 50%.
+    # Directional, not absolute: a BUY-side decile earns conviction only from evidence
+    # in the BUY direction, an AVOID-side decile only from the AVOID direction, and
+    # HOLD deciles deliberately earn none — the model has no strong call there. Using
+    # ``abs(...)`` would falsely award confidence to a bucket whose track record points
+    # the wrong way.
     d = int(decile)
-    if d >= 8:
-        edge = max(0.0, hit_rate - 0.5)
-    elif d <= 4:
-        edge = max(0.0, 0.5 - hit_rate)
+    sign = 1.0 if d >= 8 else (-1.0 if d <= 4 else 0.0)
+    t_excess = stats.get("t_excess")
+    edge = max(0.0, sign * (hit_rate - 0.5))
+    if sign == 0.0:
+        conviction_base = 0.0
+        basis = "hold"
+    elif t_excess is not None and math.isfinite(float(t_excess)):
+        # Anchor: how statistically reliable the decile's AVERAGE OOS excess is in the
+        # call's direction. This is what the product claims (the decile outperforms on
+        # average), and it stays honest where frequency can't: decile 10 wins less than
+        # half the time but wins big — real, magnitude-carried edge.
+        conviction_base = max(0.0, min(1.0, sign * float(t_excess) / T_FULL))
+        basis = "t_excess"
     else:
-        edge = 0.0
-    conviction_base = max(0.0, min(1.0, edge / EDGE_FULL))
+        conviction_base = max(0.0, min(1.0, edge / EDGE_FULL))
+        basis = "hit_rate"
     margin = _margin_factor(percentile)
     data_quality = _data_quality_factor(flags)
     coherence = _coherence_factor(drivers)
@@ -182,6 +202,9 @@ def score_confidence(
         "ci": [stats.get("ci_low"), stats.get("ci_high")],
         "decile": d,
         "components": {
+            "basis": basis,
+            "t_excess": (round(float(t_excess), 2)
+                         if t_excess is not None and math.isfinite(float(t_excess)) else None),
             "edge": round(edge, 4),
             "conviction_base": round(conviction_base, 4),
             "margin": round(margin, 4),

@@ -2,7 +2,6 @@
 
 from datetime import timedelta
 
-import pytest
 
 from stockscan import profile as P
 

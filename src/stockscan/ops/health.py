@@ -180,7 +180,7 @@ def run_checks(today=None, prices_dir: Path = PRICES_DIR) -> list[Check]:
         if last is None:
             checks.append(Check("info", "nightly_job", True, "never run yet"))
         else:
-            age_h = (pd.Timestamp.utcnow().tz_localize(None)
+            age_h = (pd.Timestamp.now("UTC").tz_localize(None)
                      - pd.Timestamp(last["started"]).tz_localize(None)).total_seconds() / 3600
             ok = age_h <= 48 and last["status"] in ("ok", "noop", "degraded")
             checks.append(Check("warn", "nightly_job", ok,

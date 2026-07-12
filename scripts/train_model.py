@@ -17,7 +17,7 @@ from stockscan.config import MIN_DOLLAR_VOLUME
 from stockscan.features import compute_features
 from stockscan.fundamental_panel import build_fundamental_panel
 from stockscan.intrinio_universe import universe_ticker_map
-from stockscan.model import MODEL_DIR, RANK_COLS, evaluate, fit, save_artifact
+from stockscan.model import RANK_COLS, evaluate, fit, save_artifact
 from stockscan.panel import load_matrices
 
 WINSOR = (0.01, 0.99)

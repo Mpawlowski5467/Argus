@@ -9,7 +9,6 @@ fabricated numeral still refuses, and the facade wires price/news/filings in."""
 import pandas as pd
 
 from stockscan.assist.move import (
-    HORIZONS,
     MOVE_SYSTEM,
     build_move_context,
     explain_move,
