@@ -386,6 +386,32 @@ def health():
     return convert.jsonable(_safe(lambda: a.health(), {}))
 
 
+# -- AI analyst panel (bull/bear/risk/synthesis — commentary, never the signal) --
+@router.get("/panel/{cik}")
+def panel_cached(cik: int):
+    """Whatever the panel cache holds for this name's LIVE context — no LLM, no
+    gate. A new filing or rank move changes the context hash and empties this."""
+    a = _facade()
+    return convert.jsonable(a.panel_cached(cik))
+
+
+@router.post("/panel/{cik}")
+def panel_role(cik: int, body: dict):
+    """Generate ONE memo (the frontend chains bull -> bear -> risk -> synthesis so
+    each request stays bounded and the page paints progressively). Single-flight
+    like every LLM surface."""
+    from ..assist.analyst import ROLES
+
+    role = (body or {}).get("role")
+    if role not in ROLES:
+        raise HTTPException(status_code=422, detail=f"role must be one of {ROLES}")
+    a = _facade()
+    with _llm_single_flight() as got:
+        if not got:
+            return {"busy": True}
+        return convert.jsonable(a.panel_role(cik, role))
+
+
 # -- overnight digest (deterministic card; grounded LLM brief on demand) ------
 @router.get("/digest")
 def digest():

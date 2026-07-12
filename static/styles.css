@@ -366,3 +366,8 @@ button.mini.ai-go:hover { background: rgba(232, 232, 232, 0.06); }
 /* risk chips on browsing tables — firewalled display flags, elevated/high only */
 .riskchip { font-size: 11px; letter-spacing: 0.5px; padding: 0 5px; border: 1px solid var(--dimmer); border-radius: 3px; white-space: nowrap; color: var(--hold); cursor: help; }
 .riskchip.high { color: var(--down); border-color: var(--down); }
+
+/* analyst panel memos — four grounded roles, commentary never signal */
+.panel-memo { display: flex; gap: 10px; padding: 6px 0; border-top: 1px dotted var(--dimmer); font-size: 13px; line-height: 1.5; }
+.panel-memo:first-of-type { border-top: 0; }
+.panel-role { flex: 0 0 72px; font-size: 11px; letter-spacing: 1px; text-transform: uppercase; color: var(--dim); padding-top: 2px; }
