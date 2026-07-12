@@ -68,6 +68,28 @@ def test_new_endpoints_are_wired(client, monkeypatch):
     assert client.get("/api/digest").json()["n_unseen_alerts"] == 0
 
 
+def test_alerts_seen_and_health_routes(client, monkeypatch):
+    class _Facade:
+        def mark_alerts_seen(self, ids=None):
+            # empty body -> all; explicit ids pass through as ints
+            return {"marked": 3 if ids is None else len(ids), "unseen_alerts": 0}
+
+        def health(self):
+            return {"as_of": "2026-07-11T05:00:00+00:00", "status": "ok",
+                    "checks": [{"level": "critical", "name": "prices", "ok": True,
+                                "detail": "fresh"}],
+                    "critical_failing": [], "runs": []}
+
+    monkeypatch.setattr(STATE, "status", "ready")
+    monkeypatch.setattr(STATE, "adata", _Facade())
+    r = client.post("/api/alerts/seen")
+    assert r.status_code == 200 and r.json() == {"marked": 3, "unseen_alerts": 0}
+    r = client.post("/api/alerts/seen", json={"ids": [4, "5"]})
+    assert r.json()["marked"] == 2                     # ids coerced and forwarded
+    r = client.get("/api/health")
+    assert r.status_code == 200 and r.json()["checks"][0]["name"] == "prices"
+
+
 def test_explain_move_route_validates_then_delegates(client, monkeypatch):
     class _Facade:
         def move_context(self, cik, horizon):

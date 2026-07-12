@@ -363,6 +363,19 @@ def explain_move(cik: int, body: dict):
         return convert.jsonable(a.move_answer(cik, horizon, bundle))
 
 
+# -- alerts ---------------------------------------------------------------------
+@router.post("/alerts/seen")
+def alerts_seen(body: dict | None = None):
+    """Acknowledge alerts from the UI — the CLI was the only way to clear the
+    statusbar badge, which contradicts the web-only decision. Body {"ids": [...]}
+    marks specific alerts; empty/absent body marks all unseen."""
+    a = _facade()
+    ids = (body or {}).get("ids")
+    if ids is not None:
+        ids = [int(i) for i in ids]
+    return convert.jsonable(a.mark_alerts_seen(ids))
+
+
 # -- system health (the nightly's stored screen + job history) ----------------
 @router.get("/health")
 def health():

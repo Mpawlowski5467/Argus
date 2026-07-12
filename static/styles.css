@@ -81,13 +81,6 @@ main { flex: 1; overflow: hidden; padding: 0; display: flex; }
 #view-scan { overflow: hidden; display: flex; flex-direction: column; padding: 20px 26px 0; }
 #view-scan[hidden] { display: none; }   /* ID beats .view[hidden] otherwise */
 .scan-controls { flex: 0 0 auto; display: flex; gap: 14px; margin-bottom: 16px; align-items: center; }
-.scan-split { flex: 1; min-height: 0; display: flex; gap: 24px; }
-.scan-list { flex: 1; min-width: 0; overflow-y: auto; padding-bottom: 30px; }
-.scan-detail { flex: 1.2; min-width: 0; overflow-y: auto; border-left: 1px dashed var(--line); padding: 2px 8px 40px 24px; }
-@media (max-width: 960px) {
-  .scan-split { flex-direction: column; }
-  .scan-detail { flex: none; border-left: 0; border-top: 1px dashed var(--line); padding: 16px 0 40px; }
-}
 #scan-table tbody tr.sel { background: rgba(232, 232, 232, 0.09); }
 #scan-table tbody tr.sel td:first-child { box-shadow: inset 2px 0 0 var(--ink); }
 #search {
@@ -369,3 +362,7 @@ button.mini.ai-go:hover { background: rgba(232, 232, 232, 0.06); }
   .sc-stats { gap: 10px; }
   .ask-form { flex-wrap: wrap; }
 }
+
+/* risk chips on browsing tables — firewalled display flags, elevated/high only */
+.riskchip { font-size: 11px; letter-spacing: 0.5px; padding: 0 5px; border: 1px solid var(--dimmer); border-radius: 3px; white-space: nowrap; color: var(--hold); cursor: help; }
+.riskchip.high { color: var(--down); border-color: var(--down); }

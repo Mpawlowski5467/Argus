@@ -14,6 +14,18 @@
   function money(x) { if (x == null || !isFinite(x)) return "—"; return "$" + Number(x).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
   function plMoney(x) { if (x == null || !isFinite(x)) return "—"; return (x >= 0 ? "+" : "−") + money(Math.abs(x)); }
   function pctColor(x) { return x == null ? "muted" : x >= 0 ? "pos" : "neg"; }
+  // FIREWALLED risk flags (distress / drawdown) as compact chips on browsing tables —
+  // display-only reads, never a trade input; empty for the vast majority of rows.
+  function riskChips(risk) {
+    if (!risk || !risk.length) return "";
+    return risk.map(function (c) {
+      var short = c.kind === "distress" ? "D" : "W";
+      var g = c.kind === "distress" ? "distress" : "drawdownRisk";
+      return '<span class="riskchip term ' + c.level + '" data-g="' + g + '" title="' +
+        c.kind + " " + c.level + (c.prob_pct != null ? " (P≈" + c.prob_pct + "%)" : "") + '">' +
+        short + (c.level === "high" ? "!" : "") + "</span>";
+    }).join(" ");
+  }
   function sign(x, d) { if (x == null || !isFinite(x)) return "—"; return (x >= 0 ? "+" : "") + x.toFixed(d == null ? 1 : d) + "%"; }
   // Every LLM endpoint (ask, ask/book, explain-move, digest brief) returns the same
   // {answer, busy, refused, violations} shape; decode it in ONE place so the busy /
@@ -123,7 +135,7 @@
     app.hidden = false;
     loader.classList.add("hide");
     setTimeout(function () { loader.style.display = "none"; }, 750);
-    switchView("scan");
+    applyHash();       // honor a deep link (#/ticker/…); plain loads land on scan
   }
 
   function renderStatus(s) {
@@ -147,9 +159,37 @@
     if (v === "watch") Watch.load();
     if (v === "scorecard") Scorecard.load();
     if (v === "paper") Paper.load();
+    writeHash(v === "ticker" && state.cik ? "#/ticker/" + state.cik : "#/" + v);
   }
   Array.prototype.forEach.call(document.querySelectorAll(".tab"), function (t) {
     t.addEventListener("click", function () { switchView(t.dataset.view); });
+  });
+
+  // -- hash deep links ---------------------------------------------------------
+  // #/ticker/320193, #/watch, … — refresh restores the view, back/forward work,
+  // and a company page becomes bookmarkable. Applied only AFTER the ready
+  // handshake (reveal calls applyHash), so a deep link can't fire into a
+  // still-loading facade; _applyingHash keeps restore from re-writing history.
+  var _applyingHash = false;
+  function writeHash(h) {
+    if (_applyingHash || location.hash === h) return;
+    state._hashSelf = true;            // our own hashchange: ignore exactly one
+    location.hash = h;
+  }
+  function applyHash() {
+    var m = /^#\/ticker\/(\d+)$/.exec(location.hash || "");
+    _applyingHash = true;
+    try {
+      if (m) Ticker.open(+m[1]);
+      else {
+        var v = (location.hash || "").replace(/^#\//, "");
+        switchView(["scan", "watch", "scorecard", "paper", "markets"].indexOf(v) >= 0 ? v : "scan");
+      }
+    } finally { _applyingHash = false; }
+  }
+  window.addEventListener("hashchange", function () {
+    if (state._hashSelf) { state._hashSelf = false; return; }
+    applyHash();
   });
 
   // -- SCAN ------------------------------------------------------------------
@@ -174,14 +214,15 @@
     },
     render: function (rows) {
       var b = $("#scan-table tbody");
-      if (!rows.length) { b.innerHTML = '<tr><td colspan="8" class="empty">no matches</td></tr>'; return; }
+      if (!rows.length) { b.innerHTML = '<tr><td colspan="9" class="empty">no matches</td></tr>'; return; }
       b.innerHTML = rows.map(function (r) {
         var on = !!Scan.watched[r.cik];
         return '<tr data-cik="' + r.cik + '"><td class="num">' + r.rank +
           '</td><td class="wcell' + (on ? " on" : "") + '" data-cik="' + r.cik + '" title="watch / unwatch">' + (on ? "★" : "☆") +
           '</td><td class="tk">' + esc(r.ticker) +
           "</td><td>" + esc(r.name) + "</td><td class=\"muted\">" + esc(r.sector) + '</td><td class="num">' + r.pct +
-          '%</td><td class="num">' + r.decile + '</td><td class="num muted">' + (r.fy || "—") + "</td></tr>";
+          '%</td><td class="num">' + r.decile + '</td><td class="num muted">' + (r.fy || "—") +
+          "</td><td>" + riskChips(r.risk) + "</td></tr>";
       }).join("");
       Array.prototype.forEach.call(b.querySelectorAll("tr"), function (tr) {
         tr.addEventListener("click", function () { Ticker.open(+tr.dataset.cik); });
@@ -932,21 +973,31 @@
       else {
         if (!w.rows.length) h.push('<div class="empty">watchlist empty — star ☆ a name on the scan table, or ☆ watch on any company page</div>');
         else {
-          h.push('<table class="grid" id="watch-table"><thead><tr><th>ticker</th><th class="num">' + term("pct", "model") + '</th><th class="num">Δ 30d</th><th>last 10-K</th><th>flag</th></tr></thead><tbody>');
+          h.push('<table class="grid" id="watch-table"><thead><tr><th>ticker</th><th class="num">' + term("pct", "model") + '</th><th class="num">Δ 30d</th><th>last 10-K</th><th>risk</th><th>flag</th></tr></thead><tbody>');
           w.rows.forEach(function (r) {
             h.push('<tr data-cik="' + r.cik + '"><td class="tk">' + esc(r.ticker) + '</td><td class="num">' + (r.pct != null ? r.pct + "%" : "—") +
               '</td><td class="num ' + pctColor(r.delta) + '">' + (r.delta != null ? (r.delta >= 0 ? "+" : "") + r.delta : "—") + "</td><td class=\"muted\">" +
-              esc(r.last_filing || "—") + '</td><td class="warn">' + esc(r.flag || "—") + "</td></tr>");
+              esc(r.last_filing || "—") + "</td><td>" + riskChips(r.risk) + '</td><td class="warn">' + esc(r.flag || "—") + "</td></tr>");
           });
           h.push("</tbody></table>");
         }
-        h.push('<div class="section-h">alerts</div>');
+        var unseen = w.alerts.filter(function (a) { return !a.seen; }).length;
+        h.push('<div class="section-h">alerts' + (unseen ? ' <button class="mini" id="btn-alerts-seen">mark all seen</button>' : "") + "</div>");
         if (!w.alerts.length) h.push('<div class="muted">no alerts</div>');
         else { h.push('<table class="grid"><tbody>'); w.alerts.forEach(function (a) { h.push('<tr><td class="alert-star">' + (a.seen ? " " : "*") + '</td><td class="muted">' + esc((a.created || "").slice(0, 16)) + "</td><td>" + esc(a.kind) + "</td><td>" + esc(a.message) + "</td></tr>"); }); h.push("</tbody></table>"); }
         h.push(Watch.healthBlock());
       }
       el("watch-body").innerHTML = h.join("");
       var bd = el("btn-digest"); if (bd) bd.onclick = Watch.runBrief;
+      var bs = el("btn-alerts-seen");
+      if (bs) bs.onclick = function () {
+        bs.disabled = true;
+        apiPost("/alerts/seen").then(function (r) {
+          // refresh the list, the digest count, and the statusbar badge together
+          Watch.load();
+          if (r && r.unseen_alerts != null) { el("s-alerts").textContent = r.unseen_alerts || 0; el("s-alerts").className = r.unseen_alerts ? "warn" : ""; }
+        }).catch(function () { bs.disabled = false; });
+      };
       Array.prototype.forEach.call(document.querySelectorAll("#watch-table tbody tr"), function (tr) { tr.addEventListener("click", function () { Ticker.open(+tr.dataset.cik); }); });
     },
   };

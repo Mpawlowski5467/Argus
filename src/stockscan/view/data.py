@@ -652,6 +652,16 @@ class ArgusData:
 
         return nightly_brief(self.digest(), llm or self._chat_llm())
 
+    def mark_alerts_seen(self, ids: list[int] | None = None) -> dict:
+        """Acknowledge alerts from the UI (all unseen, or specific ids). Returns the
+        new unseen count so the statusbar badge updates without a second round-trip."""
+        from ..ops.state import OpsState
+
+        with OpsState() as st:
+            marked = st.mark_alerts_seen(ids)
+            return {"marked": marked,
+                    "unseen_alerts": len(st.alerts(unseen_only=True, limit=999))}
+
     def health(self) -> dict:
         """The last stored health screen + a recent job strip — read-only over the ops
         record. The checks are the NIGHTLY's (run_checks probes the web UI and LLM;

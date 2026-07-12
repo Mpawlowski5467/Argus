@@ -107,6 +107,12 @@ backtest expected.
 
 ![the paper-forward view](docs/img/paper.png)
 
+**Watch** — the overnight digest (the grounded brief is pre-written by the nightly), the
+watchlist with firewalled risk chips, alerts (with mark-all-seen), and the nightly's
+12-check system-health screen.
+
+![the watch view](docs/img/watch.png)
+
 Screenshots are regenerated with `scripts/capture_screenshots.py` (headless Chromium via
 Playwright) against a throwaway instance seeded with demo data — no real portfolio is published.
 
@@ -125,7 +131,7 @@ research-grade validation, not a production-alpha claim.
 ```bash
 uv sync --extra dev        # .venv on Python 3.12 + deps
 uv sync --extra web        # add FastAPI + uvicorn for the browser UI
-uv run pytest -q           # 290+ tests green
+uv run pytest -q           # 400+ tests green (also enforced by CI on every PR)
 ```
 
 Keys go in `.env` (gitignored): `STOCKSCAN_INTRINIO_KEY` and `STOCKSCAN_PRICE_PROVIDER=intrinio`
@@ -170,7 +176,7 @@ src/stockscan/            # the import package (name unchanged; the *project* is
   web/                    # the browser UI: FastAPI serve layer over the facade
 static/                   # the web front-end (index.html, app.js, charts.js, styles.css)
 scripts/                  # runnable entry points (analyze, scan, argus_web, ops, run_phase{1,3}, …)
-tests/                    # 290+ tests — start with the PIT guard
+tests/                    # 400+ tests — start with the PIT guard
 data/  artifacts/         # gitignored: raw data, Parquet panel, model artifacts, ops state
 ```
 
