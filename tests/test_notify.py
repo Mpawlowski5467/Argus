@@ -1,0 +1,72 @@
+"""Out-of-app notification: local-first, deterministic, high-severity only.
+
+The delivery path must never raise (it runs after the nightly's real work), never
+invoke an LLM, and never surface the noisy alert kinds — a banner the user learns
+to ignore is worse than none.
+"""
+
+from stockscan.ops import notify
+from stockscan.ops.notify import HIGH_SEVERITY, deliver_nightly, nightly_summary
+
+
+def _alert(kind, message="something happened"):
+    return {"kind": kind, "message": message}
+
+
+def test_summary_leads_with_high_severity_lines():
+    alerts = [_alert("percentile_move", "AAPL moved"),
+              _alert("distress_risk", "XYZ distress risk escalated"),
+              _alert("paper_degraded", "live IC below the floor")]
+    title, msg = nightly_summary("ok", alerts)
+    assert "2 alert(s)" in title
+    assert "XYZ distress risk escalated" in msg and "live IC below the floor" in msg
+    assert "AAPL moved" not in msg          # routine kinds never make the banner
+
+
+def test_summary_caps_lines_and_counts_the_rest():
+    alerts = [_alert("distress_risk", f"name {i}") for i in range(7)]
+    _, msg = nightly_summary("ok", alerts)
+    assert msg.count("name ") == 4 and "and 3 more in the app" in msg
+
+
+def test_summary_quiet_night_is_honest():
+    title, msg = nightly_summary("ok", [])
+    assert title == "Argus nightly: ok" and msg == "no new alerts"
+    _, msg2 = nightly_summary("degraded", [_alert("percentile_move")])
+    assert "1 routine alert(s) waiting" in msg2
+
+
+def test_deliver_off_mode_never_calls_out(monkeypatch):
+    called = []
+    monkeypatch.setattr(notify, "notify_mac", lambda *a: called.append(a) or True)
+    out = deliver_nightly("ok", [_alert("distress_risk")], mode="off")
+    assert out == {"mode": "off", "alerts": 1, "high": 1, "delivered": False}
+    assert called == []
+
+
+def test_deliver_reports_unavailable_without_osascript(monkeypatch):
+    monkeypatch.setattr(notify, "_osascript_available", lambda: False)
+    out = deliver_nightly("ok", [], mode="auto")
+    assert out["mode"] == "unavailable" and out["delivered"] is False
+
+
+def test_deliver_pushes_and_degrades_on_failure(monkeypatch):
+    monkeypatch.setattr(notify, "_osascript_available", lambda: True)
+    sent = []
+    monkeypatch.setattr(notify, "notify_mac", lambda t, m: sent.append((t, m)) or True)
+    out = deliver_nightly("degraded", [_alert("universe_death", "ABC delisted")], mode="auto")
+    assert out["delivered"] is True and "_status" not in out
+    assert sent and "ABC delisted" in sent[0][1]
+
+    monkeypatch.setattr(notify, "notify_mac", lambda t, m: False)
+    out2 = deliver_nightly("ok", [], mode="auto")
+    assert out2["delivered"] is False and out2["_status"] == "degraded"
+
+
+def test_high_severity_set_stays_curated():
+    # the banner contract: paper/distress/death/vintage/health interrupt; the noisy
+    # kinds (percentile_move, filing_detected, fundamentals_updated) never do
+    assert "percentile_move" not in HIGH_SEVERITY
+    assert "filing_detected" not in HIGH_SEVERITY
+    assert {"paper_degraded", "distress_risk", "universe_death",
+            "health_critical"} <= HIGH_SEVERITY

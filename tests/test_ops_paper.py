@@ -405,3 +405,86 @@ def test_compare_not_enough_elapsed_days(tmp_path):
     rep = compare(close=close, paper_dir=paper_dir, ticker_map=tmap, horizons=(5,))
     assert rep["months"][0]["h5"] is None
     assert rep["degraded"] is None
+
+
+def _fake_rep(degraded=None):
+    month = {
+        "as_of": "2026-07-31", "n": 2900, "in_sample": False, "late": False,
+        "h21": {"n_priced": 2810, "rank_ic": 0.021, "decile_spread": 0.012,
+                "top_decile_excess": 0.004, "book_excess": 0.006},
+        "h63": {"n_priced": 2750, "rank_ic": 0.034, "decile_spread": 0.019,
+                "top_decile_excess": 0.007, "book_excess": 0.011},
+    }
+    rep = {
+        "baseline": {"expected_ic": 0.0391, "expected_spread_63d": 0.0229,
+                     "frozen_on": "2026-07-03T04:00:00+00:00"},
+        "label_basis": "raw unrepaired prices + 1/99 per-month winsorization",
+        "months_logged": 2, "months_scored_oos": 1, "months_scored_in_sample": 1,
+        "live_mean_ic": 0.034, "live_mean_spread": 0.019,
+        "months": [month,
+                   {"as_of": "2026-08-31", "n": 2950, "in_sample": False, "h63": None}],
+        "degraded": degraded,
+    }
+    if degraded is None:
+        rep["note"] = "needs 3 out-of-sample scored months before the degradation rule applies"
+    else:
+        rep["degradation_floor"] = 0.0196
+    return rep
+
+
+def test_month_close_report_carries_numbers_and_caveats_verbatim():
+    from stockscan.ops.paper import month_close_report
+
+    rep = _fake_rep()
+    text = month_close_report(rep["months"][0], rep)
+    assert "# Paper-forward month close — 2026-07" in text
+    assert "rank IC 0.034" in text and "rank IC 0.021" in text        # both horizons
+    assert "book excess 0.011" in text
+    assert "0.0391" in text                                           # expectation
+    assert "needs 3 out-of-sample scored months" in text
+    assert "mostly noise" in text and "gross close-to-close" in text
+    assert "early peek, never the verdict" in text
+
+    deg = _fake_rep(degraded=True)
+    assert "**DEGRADED**" in month_close_report(deg["months"][0], deg)
+    ok = _fake_rep(degraded=False)
+    assert "on track" in month_close_report(ok["months"][0], ok)
+
+
+def test_month_close_report_flags_in_sample_months():
+    from stockscan.ops.paper import month_close_report
+
+    rep = _fake_rep()
+    rep["months"][0]["in_sample"] = True
+    text = month_close_report(rep["months"][0], rep)
+    assert "IN-SAMPLE" in text and "EXCLUDED from the gate" in text
+
+
+def test_write_month_reports_idempotent_and_refreshes_on_change(tmp_path):
+    from stockscan.ops.paper import write_month_reports
+
+    rep = _fake_rep()
+    first = write_month_reports(rep, paper_dir=tmp_path)
+    assert first == {"written": ["2026-07.md"], "unchanged": 0, "pending": 1}
+    assert (tmp_path / "reports" / "2026-07.md").exists()
+
+    again = write_month_reports(rep, paper_dir=tmp_path)
+    assert again == {"written": [], "unchanged": 1, "pending": 1}
+
+    # a new gate total (next month graded) re-renders the existing report too
+    rep["months_scored_oos"] = 2
+    rep["live_mean_ic"] = 0.036
+    changed = write_month_reports(rep, paper_dir=tmp_path)
+    assert changed["written"] == ["2026-07.md"]
+    assert "0.036" in (tmp_path / "reports" / "2026-07.md").read_text()
+
+
+def test_write_month_reports_early_peek_at_h21(tmp_path):
+    from stockscan.ops.paper import write_month_reports
+
+    rep = _fake_rep()
+    rep["months"][0]["h63"] = None      # only the early horizon has elapsed
+    out = write_month_reports(rep, paper_dir=tmp_path)
+    assert out["written"] == ["2026-07.md"]
+    text = (tmp_path / "reports" / "2026-07.md").read_text()
+    assert "rank IC 0.021" in text and "h63 (gate horizon): not yet scoreable" in text

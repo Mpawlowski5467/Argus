@@ -870,9 +870,14 @@
         var off = (Watch.brief.violations || []).some(function (v) { return String(v).indexOf("llm-error") === 0; });
         h += off ? '<div class="ask-a"><span class="warn">the local model is unreachable — the card above is the full record.</span></div>'
                  : '<div class="ask-a">' + esc(Watch.brief.answer) + "</div>";
+      } else if (d.stored_brief && d.stored_brief.answer) {
+        // the nightly pre-writes the brief (ops job_digest); show it instantly —
+        // the button below re-runs it live over the current record
+        h += '<div class="ask-a">' + esc(d.stored_brief.answer) +
+          ' <span class="muted">(written overnight)</span></div>';
       }
       h += '<div class="ask-form" style="margin-top:8px"><button class="mini" id="btn-digest"' + (busy ? " disabled" : "") + ">" +
-        (busy ? "writing …" : Watch.brief ? "re-run morning brief" : "✦ morning brief (local model)") + "</button>" +
+        (busy ? "writing …" : (Watch.brief || (d.stored_brief && d.stored_brief.answer)) ? "re-run morning brief" : "✦ morning brief (local model)") + "</button>" +
         '<span class="ai-note">a grounded read of the numbers above — it can\'t invent a stat</span></div>';
       return h + "</div>";
     },
@@ -888,10 +893,37 @@
       }).catch(function () { state.digesting = false; Watch.paint(); });
     },
     data: null,       // GET /watch payload
+    healthData: null, // GET /health payload (the nightly's stored screen)
     load: function () {
       api("/digest").then(function (d) { Watch.digest = d; Watch.paint(); }).catch(nop);
+      api("/health").then(function (d) { Watch.healthData = d; Watch.paint(); }).catch(nop);
       api("/watch").then(function (w) { Watch.data = w; Watch.paint(); });
       Watch.paint();
+    },
+    // the nightly's stored 12-check screen + a latest-status-per-job strip. Read-only
+    // and honest about staleness: an old as_of means the nightly itself has stalled.
+    healthBlock: function () {
+      var hd = Watch.healthData;
+      var h = '<div class="section-h">system health</div>';
+      if (!hd || !hd.as_of) return h + '<div class="muted">no health screen stored yet — it runs at the end of each nightly</div>';
+      var checks = hd.checks || [];
+      var bad = checks.filter(function (c) { return !c.ok; });
+      var crit = (hd.critical_failing || []).length;
+      h += '<div class="digest-line">' + (bad.length ? '<span class="' + (crit ? "neg" : "warn") + '">' + bad.length + " failing</span> · " : "") +
+        (checks.length - bad.length) + "/" + checks.length + ' checks ok <span class="muted">as of ' + esc((hd.as_of || "").slice(0, 16)) + "</span></div>";
+      bad.forEach(function (c) {
+        h += '<div class="digest-line"><span class="' + (c.level === "critical" ? "neg" : "warn") + '">' + esc(c.level) + "</span> " +
+          esc(c.name) + ' <span class="muted">' + esc(c.detail) + "</span></div>";
+      });
+      var seen = {}, parts = [];
+      (hd.runs || []).forEach(function (r) {
+        if (seen[r.job]) return;
+        seen[r.job] = true;
+        var cls = r.status === "failed" ? "neg" : r.status === "degraded" ? "warn" : "muted";
+        if (parts.length < 10) parts.push(esc(r.job) + ' <span class="' + cls + '">' + esc(r.status) + "</span>");
+      });
+      if (parts.length) h += '<div class="digest-line muted">' + parts.join(" · ") + "</div>";
+      return h;
     },
     paint: function () {
       var w = Watch.data;
@@ -911,6 +943,7 @@
         h.push('<div class="section-h">alerts</div>');
         if (!w.alerts.length) h.push('<div class="muted">no alerts</div>');
         else { h.push('<table class="grid"><tbody>'); w.alerts.forEach(function (a) { h.push('<tr><td class="alert-star">' + (a.seen ? " " : "*") + '</td><td class="muted">' + esc((a.created || "").slice(0, 16)) + "</td><td>" + esc(a.kind) + "</td><td>" + esc(a.message) + "</td></tr>"); }); h.push("</tbody></table>"); }
+        h.push(Watch.healthBlock());
       }
       el("watch-body").innerHTML = h.join("");
       var bd = el("btn-digest"); if (bd) bd.onclick = Watch.runBrief;

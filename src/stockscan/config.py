@@ -199,3 +199,10 @@ WEB_URL = os.environ.get("STOCKSCAN_WEB_URL", "http://127.0.0.1:8000")
 BACKUPS_DIR = Path(os.environ.get("STOCKSCAN_BACKUPS_DIR", ARTIFACTS_DIR / "backups"))
 BACKUP_KEEP_DAYS = 14                 # dated backup folders retained
 LOG_ROTATE_MB = 10                    # copy-truncate a log past this size (one .1 kept)
+
+# --- out-of-app notifications (nightly, local-first) ------------------------------
+# 'auto' delivers via macOS Notification Center (osascript) and no-ops on other
+# platforms; 'off' disables. Local by decision, not limitation: alert text carries
+# ticker names and position hints, and the standing privacy rule is that portfolio
+# data never leaves the machine — so no ntfy/email/webhook sinks here.
+NOTIFY_MODE = os.environ.get("STOCKSCAN_NOTIFY", "auto")

@@ -196,7 +196,12 @@ def job_paper_check(state: OpsState) -> dict:
     from stockscan.ops import paper
 
     def _run() -> dict:
-        return paper.paper_progress_alerts(state, paper.compare())
+        rep = paper.compare()
+        deltas = paper.paper_progress_alerts(state, rep)
+        # one markdown scorecard per scoreable month (idempotent; refreshed when the
+        # running gate numbers move) — the artifact the whole experiment reports into
+        deltas["reports"] = paper.write_month_reports(rep)
+        return deltas
 
     return _run_logged(state, "paper_check", _run)
 
@@ -208,6 +213,47 @@ def job_backup(state: OpsState) -> dict:
     _run_logged(state, "rotate_logs", rotate_logs)
     _run_logged(state, "backup_artifacts", backup_artifacts)
     return _run_logged(state, "backup", backup_stores)
+
+
+def job_health_check(state: OpsState) -> dict:
+    """The 12-check health screen at the end of the night, stored as job deltas so the
+    web UI can render it (GET /api/health). prev_failing is captured BEFORE the job
+    row opens — see health_record's docstring."""
+    from stockscan.ops.health import health_record, run_checks
+
+    prev_failing = set((((state.last_run("health") or {}).get("deltas")) or {})
+                       .get("critical_failing", []))
+    return _run_logged(
+        state, "health",
+        lambda: health_record(run_checks(), prev_failing, state.add_alert))
+
+
+def job_digest(state: OpsState) -> dict:
+    """Generate the grounded morning brief while the model is warm from the monitor
+    pass, and store it so the web digest card opens instantly. Fail-open: a down or
+    refusing LLM stores nothing and the card falls back to on-demand generation."""
+    from stockscan.assist.brief import build_brief_context, nightly_brief
+    from stockscan.config import (
+        LLM_CHAT_MAX_TOKENS,
+        LLM_CHAT_MODEL,
+        LLM_CHAT_REASONING,
+        LLM_CHAT_TIMEOUT,
+    )
+    from stockscan.narrate.llm import LocalLLM
+
+    def _run() -> dict:
+        ctx = build_brief_context(state)
+        llm = LocalLLM(model=LLM_CHAT_MODEL, timeout=LLM_CHAT_TIMEOUT,
+                       max_tokens=LLM_CHAT_MAX_TOKENS, reasoning_effort=LLM_CHAT_REASONING)
+        res = nightly_brief(ctx, llm)
+        if res.get("refused") or not res.get("answer"):
+            return {"stored": False, "refused": bool(res.get("refused")),
+                    "_status": "degraded"}
+        state.kv_set("digest_brief", {"answer": res["answer"],
+                                      "attempts": res.get("attempts")})
+        return {"stored": True, "chars": len(res["answer"])}
+
+    return _run_logged(state, "digest", _run)
 
 
 def job_monitor(state: OpsState, no_llm: bool = False, edgar: bool = True,
@@ -230,6 +276,7 @@ def job_monitor(state: OpsState, no_llm: bool = False, edgar: bool = True,
 
 def job_nightly(state: OpsState, no_llm: bool = False) -> int:
     """The scheduler entry: each stage self-checks whether it is due."""
+    started_iso = pd.Timestamp.now("UTC").isoformat(timespec="seconds")
     reaped = state.reap_stale_runs()
     if reaped:
         print(f"[reap] {len(reaped)} stranded 'running' row(s) marked aborted: "
@@ -269,10 +316,36 @@ def job_nightly(state: OpsState, no_llm: bool = False) -> int:
     job_themes(state)
     # housekeeping last: snapshot the stores AFTER tonight's writes, rotate fat logs
     job_backup(state)
+
+    # grounded morning brief while the model is warm; stored for the web digest card.
+    # fail-open twice over: job_digest degrades on refusal, and a crash here must
+    # never fail the night that just did the real work
+    if not no_llm:
+        try:
+            job_digest(state)
+        except Exception as exc:
+            print(f"[digest] skipped: {type(exc).__name__}: {exc}")
+
+    # health screen over tonight's end state — cheap; newly-failing criticals become
+    # alerts (picked up by the notification below). Same never-fail-the-night wrap.
+    try:
+        job_health_check(state)
+    except Exception as exc:
+        print(f"[health] skipped: {type(exc).__name__}: {exc}")
+
+    status = "degraded" if degraded else "ok"
     run_id = state.job_start("nightly")
-    state.job_finish(run_id, "degraded" if degraded else "ok",
+    state.job_finish(run_id, status,
                      {"prices_failed_frac": round(deltas.get("failed", 0) / checked, 4),
                       "reference_ok": deltas.get("reference_ok", True)})
+
+    # the one human-facing step: a single local notification summarizing the night
+    # (deterministic — no LLM in the delivery path; high-severity kinds only)
+    from stockscan.ops.notify import deliver_nightly
+
+    new_alerts = [a for a in state.alerts(unseen_only=True, limit=500)
+                  if a["created"] >= started_iso]
+    _run_logged(state, "notify", deliver_nightly, status, new_alerts)
     return 0
 
 
