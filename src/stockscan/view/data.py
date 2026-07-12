@@ -729,6 +729,25 @@ class ArgusData:
             return {"marked": marked,
                     "unseen_alerts": len(st.alerts(unseen_only=True, limit=999))}
 
+    def regime(self) -> dict | None:
+        """Market context (breadth / median vol / EW drawdown) over the LIQUID
+        cross-section — display-only facts, cached per as_of (the matrix scan is a
+        few hundred ms; the numbers only move when the data does)."""
+        from .regime import compute_regime, regime_line
+
+        key = str(self.as_of)
+        cached = getattr(self, "_regime_cache", None)
+        if cached and cached.get("key") == key:
+            return cached["value"]
+        tickers = None
+        if self._cross is not None and "ticker" in self._cross.columns:
+            tickers = list(self._cross["ticker"].dropna().unique())
+        r = compute_regime(self.data.close, tickers=tickers, as_of=self.as_of)
+        if r is not None:
+            r = {**r, "line": regime_line(r)}
+        self._regime_cache = {"key": key, "value": r}
+        return r
+
     def health(self) -> dict:
         """The last stored health screen + a recent job strip — read-only over the ops
         record. The checks are the NIGHTLY's (run_checks probes the web UI and LLM;

@@ -70,3 +70,35 @@ def test_health_record_all_ok_is_clean():
                         prev_failing={"prices"}, add_alert=lambda *a: 1 / 0)
     assert rec["critical_failing"] == [] and "_status" not in rec or rec.get("_status") == "ok"
     assert rec["checks"][0]["ok"] is True
+
+
+def _write_meta(base, rel, trained_through):
+    import json as _json
+
+    p = base / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(_json.dumps({"trained_through": trained_through}))
+
+
+def test_head_co_freeze_warns_when_a_head_lags_the_model(tmp_path):
+    from stockscan.ops.health import head_co_freeze
+
+    _write_meta(tmp_path, "model/meta.json", "2026-03-31")
+    _write_meta(tmp_path, "drawdown_model/meta.json", "2025-12-31")   # lags
+    _write_meta(tmp_path, "confidence_cal/calibration.json", "2026-03-31")  # co-frozen
+
+    c = head_co_freeze(artifacts_dir=tmp_path)
+    assert c is not None and c.ok is False and c.level == "warn"
+    assert "drawdown" in c.detail and "2025-12-31" in c.detail
+    assert "confidence" not in c.detail            # the co-frozen head is not named
+
+
+def test_head_co_freeze_clean_and_absent_cases(tmp_path):
+    from stockscan.ops.health import head_co_freeze
+
+    assert head_co_freeze(artifacts_dir=tmp_path) is None        # nothing frozen
+    _write_meta(tmp_path, "model/meta.json", "2026-03-31")
+    assert head_co_freeze(artifacts_dir=tmp_path) is None        # no heads to compare
+    _write_meta(tmp_path, "distress_model/meta.json", "2026-03-31")
+    c = head_co_freeze(artifacts_dir=tmp_path)
+    assert c.ok is True and "distress" in c.detail

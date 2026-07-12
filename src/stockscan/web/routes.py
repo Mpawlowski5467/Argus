@@ -376,6 +376,15 @@ def alerts_seen(body: dict | None = None):
     return convert.jsonable(a.mark_alerts_seen(ids))
 
 
+# -- market context (breadth / vol / drawdown — display-only facts) -----------
+@router.get("/regime")
+def regime():
+    """Three market-context reads over the liquid universe. Deliberately not a
+    named 'regime' and never a model input — a header line for the human."""
+    a = _facade()
+    return convert.jsonable(_safe(lambda: a.regime(), None) or {})
+
+
 # -- system health (the nightly's stored screen + job history) ----------------
 @router.get("/health")
 def health():

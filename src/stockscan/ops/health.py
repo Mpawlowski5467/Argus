@@ -85,6 +85,40 @@ def head_staleness(today, artifacts_dir: Path = None,
         f"deliberately (paper retrain-record) or accept the drift")
 
 
+def head_co_freeze(artifacts_dir: Path = None) -> Check | None:
+    """Warn when the RETURN model's freeze has advanced past a risk head's.
+
+    The risk heads (distress / drawdown / confidence calibration) describe the
+    model they were built beside; a return-model refreeze silently orphans them —
+    the confidence calibration in particular is a read of the return model's OWN
+    OOS record, so its rebuild-on-refreeze rule was documentation-only until now.
+    A WARNING, never a gate: a lagging head degrades visibly, it doesn't block
+    the nightly. Absent heads are simply not compared."""
+    base = Path(artifacts_dir) if artifacts_dir is not None else ARTIFACTS_DIR
+    dates: dict[str, pd.Timestamp] = {}
+    for name, rel in _HEAD_METAS:
+        p = base / rel
+        if not p.exists():
+            continue
+        try:
+            tt = json.loads(p.read_text()).get("trained_through")
+        except (OSError, json.JSONDecodeError):
+            continue
+        if tt:
+            dates[name] = pd.Timestamp(tt)
+    if "model" not in dates or len(dates) < 2:
+        return None
+    model_tt = dates["model"]
+    lagging = [f"{n} {str(d.date())} vs model {str(model_tt.date())}"
+               for n, d in dates.items() if n != "model" and d < model_tt]
+    heads = ", ".join(sorted(n for n in dates if n != "model"))
+    return Check(
+        "warn", "head_co_freeze", not lagging,
+        f"all risk heads at/past the return model's freeze ({heads})" if not lagging
+        else "risk heads lag the return model's freeze: " + "; ".join(lagging)
+        + " — rebuild them beside the next refreeze (they describe the OLD model)")
+
+
 def run_checks(today=None, prices_dir: Path = PRICES_DIR) -> list[Check]:
     from ..model import MODEL_DIR
     from ..panel import matrix_cache_fresh, matrix_cache_paths
@@ -200,6 +234,9 @@ def run_checks(today=None, prices_dir: Path = PRICES_DIR) -> list[Check]:
     staleness = head_staleness(t)
     if staleness is not None:
         checks.append(staleness)
+    co_freeze = head_co_freeze()
+    if co_freeze is not None:
+        checks.append(co_freeze)
 
     # web UI (informational — a personal tool's server may simply not be running)
     try:

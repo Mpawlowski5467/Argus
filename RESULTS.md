@@ -1,3 +1,150 @@
+# ML Risk-Layer & Factor-Research Verdicts — Backfill (2026-07-12)
+
+These verdicts shipped 2026-07-03/04 but were recorded only in artifact metadata,
+`docs/ml-risk-layer.md`, and script docstrings — the record-of-record was missing
+exactly the most recent ML work. Every number below is transcribed from the frozen
+artifacts (`artifacts/*/meta.json`, `confidence_cal/calibration.json`); claims that
+exist only as research-session output are marked with their regeneration command.
+
+## Distress head — ranking gate PASS; wired display-only (frozen through 2025-03-31)
+
+Learned P(distress-delist within 12 months) from the same 10 sector-ranked
+fundamentals as the return model. The label is **price-confirmed** (positives must
+also look dead in prices: terminal print ≤ $1, ≥70% off the high, or 1-year return
+≤ −50%) because the raw Form-25 ledger is mostly benign M&A — labeling on ledger
+reason alone collapses the task (`run_distress.py --naive` shows the gap).
+
+- Panel: 834,395 rows / 170 dates, base rate **2.0%** (n_positives 16,661).
+- Walk-forward OOS: **AUC 0.703**, PR-AUC 0.050, precision@top-decile **5.8%**
+  (= 2.8× base rate), calibration MAE **0.007**.
+- CPCV (45 purged combos): **mean AUC 0.744 ± 0.019** — the ranking survives the
+  honest test.
+- **But the overlay says don't trade it** (re-run 2026-07-12,
+  `run_distress_overlay.py`, all OOS): the ranking is real in the tradable book
+  (top-distress-decile 12-month death rate **1.65%** vs **0.02%** bottom; −2.14%
+  mean 63d excess gross) yet a hard long-book veto adds **nothing** — ΔSharpe
+  **+0.00 at all four thresholds** (net CAGR +9.13% → +9.17% at best): the
+  return model already avoids these names. The short side dies to borrow
+  (long/short ΔSharpe **−0.59**, net CAGR +0.05%). Note the script's automated
+  verdict prints "wire it" because its pass criterion is *improves or holds* —
+  a zero-delta veto "holds"; the standing decision is that zero measured benefit
+  doesn't buy a trade rule. Wired as a firewalled display flag + monitor
+  escalation alert only; the byte-identical-signal firewall test enforces that
+  it can never touch score/paper/trade. (The overlay's `-P(distress)` safe-tilt
+  diagnostic printed Sharpe 0.59 vs 0.41 baseline — a DIFFERENT book
+  construction chosen after seeing results; recorded as a candidate for a
+  properly pre-registered study, not evidence.)
+
+## Drawdown head — gate PASS on a broader target (frozen through 2025-12-31)
+
+Learned P(peak-to-trough drawdown ≤ −30% within 6 months) — the common
+survivor-crash the rare distress label can't speak to. Base rate **39.5%**
+(296,199 of 750,506 rows, 179 dates).
+
+- Walk-forward OOS: **AUC 0.768**, PR-AUC 0.672, precision@top-decile **77.6%**
+  (1.93× base), calibration MAE **0.089** — note the wide MAE: the display
+  thresholds (high ≥ 0.70 / elevated ≥ 0.55) may be optimistic vs live
+  probabilities; accepted and recorded.
+- CPCV: **mean AUC 0.778** (min 0.721, **45/45 combos > 0.70**) — stronger than
+  distress.
+- Orthogonality vs distress (session-reported 2026-07-04; regenerate:
+  `run_drawdown_head.py --orthogonality`): the two scores correlate (ρ ≈ +0.73 —
+  both read fundamental fragility) but AUC among non-distress rows ≈ 0.759 ≈
+  overall, so it cleanly ranks survivor-crashes distress can't. Shipped
+  display-only, same firewall discipline; it also feeds the confidence score's
+  bounded downside factor (high → ×0.75, elevated → ×0.90).
+
+## Confidence score — derived, then re-anchored when the BUY side died (2026-07-11)
+
+Not a model: a transparent read of the frozen return model's own purged
+walk-forward OOS record (152 dates / 401,008 rows, trained_through 2026-03-31),
+bounded by margin / data-quality / SHAP-coherence / downside factors, ceiling 85.
+
+- **v1 anchor was wrong in production**: hit_rate = P(excess > 0) (beat the sector
+  MEAN) sits below 0.5 even for decile 10 under right-skewed excess returns, and a
+  later directional-edge rule (correct on its own) then zeroed every BUY-side
+  score — decile 10 read 0/100 while decile 1 read 78/100.
+- The median re-anchor exposed the deeper truth: **the top decile's edge is
+  magnitude-carried, not frequency-carried.** From the frozen calibration:
+  decile 10 hit_rate vs the per-date median = **0.4929** (mean excess **+0.16%**/63d,
+  NW-t **+0.68**); decile 1 = **0.4323** (mean excess **−2.24%**/63d, NW-t **−2.49**).
+- v2 therefore anchors conviction to **t_excess** (Newey–West t of the per-date
+  mean OOS excess, lag = label overlap — the same statistic this file gates the
+  model on), directional per side, with the unflattered median hit-rate always
+  displayed beside the number. Live scores: BUY decile 10 ≈ 16/100, decile 9 ≈
+  18/100, AVOID decile 1 ≈ 61/100 (down from 78 — the t respects date clustering
+  that the old pooled Wilson CIs ignored). A production-artifact regression test
+  now fails if the BUY side ever silently dies again.
+
+## Reversal / low-vol / Amihud — do NOT promote (2026-07-03)
+
+Recorded from the research session (regenerate: `run_reversal_test.py`,
+`run_reversal_matched_horizon.py`; panels cache to the system temp dir):
+
+- **st_rev** was the first price feature to clear the 63-day model bar
+  (walk-forward + CPCV, stable across seeds) — and Path-2 killed it anyway: at its
+  NATIVE 21-day horizon the effect is absent (a real reversal must be strongest
+  there), the construction scan found no native reversal in this universe at any
+  trailing window, and the per-date block-bootstrap ΔIC was not significant. The
+  63-day result is a horizon-fragile interaction artifact, not an edge.
+- **low_vol** (and the all-three arm) collapsed under CPCV; **amihud** was flat.
+- All plumbing kept default-off (`EXTRA_PRICE_FEATURES`), like momentum.
+
+The through-line of all of 2026-07's factor research: every candidate won
+somewhere (standalone IC, walk-forward, one horizon) and died under CPCV or a
+matched-horizon check. The model-level CPCV bar is the bar.
+
+---
+
+# Value Retest with TRUE PIT Market Cap — Real but Non-Additive; do NOT promote (2026-07-12)
+
+The original value gate ran on proxy caps over ADJUSTED closes (future splits in
+the denominator). Both blockers since cleared — unadjusted `uclose` backfill
+complete, PIT shares recipe validated — so this is the honest re-ask.
+`uv run python scripts/run_value_pit_test.py` (same panel/harness as the
+momentum/reversal tests: 450,600 rows, 182 dates, ~2,475 names/date).
+
+## The construction finally works
+
+- PIT shares per filing: `CommonStockSharesOutstanding` at the balance-sheet
+  date, `WeightedAverageNumberOfSharesOutstandingBasic` fallback. Coverage on
+  labeled rows: **E/P 86% · B/M 88% · S/P 71%**.
+- Cap = unadjusted close (as-of date) × PIT shares. Sanity anchor: AAPL at the
+  last print ≈ **$4.66T** (14.77B sh × $315) — right order, right era.
+- Known limit (recorded): FSDS drops XBRL dimensions, so a dual-class name's
+  shares pick is its largest class — bias toward undercount/NaN, never invented
+  cap.
+
+## E/P is a REAL standalone signal — the first new one since momentum
+
+Single-feature rank IC, pooled: **E/P +0.0592 (t_nw +5.66)** — on par with roa
+(+0.060) and op_margin (+0.065), the strongest fundamentals in the stack. B/M is
+dead (−0.009, t −0.9); S/P flat (+0.013, t +0.9). bm_rank mean |corr| vs the 10
+fundamental ranks: 0.172 (max 0.345) — moderately overlapping, not orthogonal.
+
+## …and it still fails the model-level bar — decisively
+
+| arm | WF OOS IC | t_nw | CPCV mean | CPCV 5th pct |
+|---|---|---|---|---|
+| baseline (10 fundamentals) | **+0.0381** | +5.74 | **+0.0371** | +0.0118 |
+| +bm | +0.0372 | +5.56 | +0.0340 | +0.0118 |
+| +ep+bm+sp | +0.0360 | +5.37 | +0.0315 | **+0.0048** |
+
+Value doesn't merely fail to add — it actively dilutes: every arm is worse than
+baseline in BOTH walk-forward and CPCV, and the full value arm halves the CPCV
+5th percentile. E/P's information is evidently a re-expression of the
+earnings-quality block (earnings over price vs earnings over assets/equity) plus
+a price-level tilt the model doesn't want. This is the cleanest kill of the
+series: it never even won the walk-forward leg.
+
+**Kept:** the default-off plumbing (`prepare_features(extra_cols=…)`,
+`build_fundamental_panel(value_price=…)`, `VALUE_FEATURES`) and the PIT-shares
+recipe — the validated true-cap construction is now available for DISPLAY-grade
+market cap (markets-view sizing, universe description) independent of any
+modeling use.
+
+---
+
 # Momentum Feature Test — Real but Non-Additive (2026-07-03)
 
 Tested whether adding price momentum (12-1 and 6-1) to the fundamentals-only model

@@ -27,6 +27,7 @@ from ..config import NOTIFY_MODE
 HIGH_SEVERITY = frozenset({
     "paper_degraded", "paper_recovered", "paper_graded",   # the live experiment moved
     "distress_risk",                                       # a held/watched name at risk
+    "drawdown_risk",                                       # entered HIGH drawdown risk
     "universe_death",                                      # a tracked name delisted
     "unregistered_artifact",                               # vintage discipline broken
     "health_critical",                                     # the machinery itself is sick

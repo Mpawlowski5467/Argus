@@ -128,6 +128,8 @@ class OpsState:
         cols = {r[1] for r in self._db.execute("pragma table_info(signal_state)")}
         if "distress" not in cols:   # FIREWALLED distress prob, for escalation alerts
             self._db.execute("alter table signal_state add column distress real")
+        if "drawdown" not in cols:   # FIREWALLED drawdown prob, same escalation use
+            self._db.execute("alter table signal_state add column drawdown real")
 
     def close(self) -> None:
         self._db.close()
@@ -311,24 +313,30 @@ class OpsState:
     # -- signal state (percentile-move detection) -----------------------------------
     def get_signal(self, cik: int) -> dict | None:
         row = self._db.execute(
-            "select percentile, decile, as_of, distress from signal_state where cik = ?",
+            "select percentile, decile, as_of, distress, drawdown "
+            "from signal_state where cik = ?",
             (int(cik),),
         ).fetchone()
         if row is None:
             return None
-        return {"percentile": row[0], "decile": row[1], "as_of": row[2], "distress": row[3]}
+        return {"percentile": row[0], "decile": row[1], "as_of": row[2],
+                "distress": row[3], "drawdown": row[4]}
 
     def record_signal(self, cik: int, percentile: int, decile: int, as_of: str,
-                      distress: float | None = None) -> None:
-        """Persist the latest signal. ``distress`` (FIREWALLED risk-flag prob) is stored
-        only so the monitor can alert on ESCALATION; it is never a trade input."""
+                      distress: float | None = None,
+                      drawdown: float | None = None) -> None:
+        """Persist the latest signal. ``distress``/``drawdown`` (FIREWALLED risk-flag
+        probs) are stored only so the monitor can alert on ESCALATION; they are never
+        trade inputs."""
         self._db.execute(
-            "insert into signal_state (cik, percentile, decile, as_of, updated, distress) "
-            "values (?,?,?,?,?,?) on conflict(cik) do update set "
+            "insert into signal_state (cik, percentile, decile, as_of, updated, "
+            "distress, drawdown) values (?,?,?,?,?,?,?) on conflict(cik) do update set "
             "percentile = excluded.percentile, decile = excluded.decile, "
-            "as_of = excluded.as_of, updated = excluded.updated, distress = excluded.distress",
+            "as_of = excluded.as_of, updated = excluded.updated, "
+            "distress = excluded.distress, drawdown = excluded.drawdown",
             (int(cik), int(percentile), int(decile), str(as_of), _utcnow(),
-             float(distress) if distress is not None else None),
+             float(distress) if distress is not None else None,
+             float(drawdown) if drawdown is not None else None),
         )
         self._db.commit()
 
