@@ -19,11 +19,21 @@ reason alone collapses the task (`run_distress.py --naive` shows the gap).
   (= 2.8× base rate), calibration MAE **0.007**.
 - CPCV (45 purged combos): **mean AUC 0.744 ± 0.019** — the ranking survives the
   honest test.
-- **But the overlay gate said don't trade it** (`run_distress_overlay.py`): a hard
-  distress exit added ~nothing to the net long book (the return model already
-  avoids these names) and the short side died to borrow costs. Wired as a
-  firewalled display flag + monitor escalation alert only; byte-identical-signal
-  firewall test enforces that it can never touch score/paper/trade.
+- **But the overlay says don't trade it** (re-run 2026-07-12,
+  `run_distress_overlay.py`, all OOS): the ranking is real in the tradable book
+  (top-distress-decile 12-month death rate **1.65%** vs **0.02%** bottom; −2.14%
+  mean 63d excess gross) yet a hard long-book veto adds **nothing** — ΔSharpe
+  **+0.00 at all four thresholds** (net CAGR +9.13% → +9.17% at best): the
+  return model already avoids these names. The short side dies to borrow
+  (long/short ΔSharpe **−0.59**, net CAGR +0.05%). Note the script's automated
+  verdict prints "wire it" because its pass criterion is *improves or holds* —
+  a zero-delta veto "holds"; the standing decision is that zero measured benefit
+  doesn't buy a trade rule. Wired as a firewalled display flag + monitor
+  escalation alert only; the byte-identical-signal firewall test enforces that
+  it can never touch score/paper/trade. (The overlay's `-P(distress)` safe-tilt
+  diagnostic printed Sharpe 0.59 vs 0.41 baseline — a DIFFERENT book
+  construction chosen after seeing results; recorded as a candidate for a
+  properly pre-registered study, not evidence.)
 
 ## Drawdown head — gate PASS on a broader target (frozen through 2025-12-31)
 

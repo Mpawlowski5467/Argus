@@ -78,6 +78,7 @@
     insample: "This date falls inside the model's training window, so the score may flatter itself. Only out-of-sample months are the honest test.",
     stale: "How old the filing behind this analysis is. Fundamentals move slowly, but a very stale 10-K means the model is reading old news.",
     adv: "Average daily dollar volume — how much of this name trades per day. The universe floor screens out names too illiquid to trade.",
+    regime: "Market context over the liquid universe: breadth (names above their own 200-day mean), the median name's trailing volatility vs the last 5 years, and the equal-weight universe's distance from its high. Facts for the reader — never a model input, and deliberately not a named 'regime'.",
     equalweight: "Every tracked name counts the same, regardless of position size — the spread-out view of your book.",
     valueweight: "Names weighted by the dollar value of your position — the view of where your money actually sits.",
   };
@@ -127,6 +128,11 @@
     Promise.all([api("/sectors"), api("/scan?sector=all")]).then(function (r) {
       Scan.initSectors(r[0]); Scan.render(r[1]);
       Scan.loadWatched();
+      // market-context line (display-only facts; fails silent — a missing line
+      // must never block the scan)
+      api("/regime").then(function (g) {
+        if (g && g.line) el("regime-line").textContent = g.line;
+      }).catch(nop);
       var wait = Math.max(0, 1400 - (Date.now() - started));
       setTimeout(reveal, wait);
     }).catch(function (e) { loaderError("boot error — " + e.message); });
