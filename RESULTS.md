@@ -86,6 +86,55 @@ matched-horizon check. The model-level CPCV bar is the bar.
 
 ---
 
+# Value Retest with TRUE PIT Market Cap — Real but Non-Additive; do NOT promote (2026-07-12)
+
+The original value gate ran on proxy caps over ADJUSTED closes (future splits in
+the denominator). Both blockers since cleared — unadjusted `uclose` backfill
+complete, PIT shares recipe validated — so this is the honest re-ask.
+`uv run python scripts/run_value_pit_test.py` (same panel/harness as the
+momentum/reversal tests: 450,600 rows, 182 dates, ~2,475 names/date).
+
+## The construction finally works
+
+- PIT shares per filing: `CommonStockSharesOutstanding` at the balance-sheet
+  date, `WeightedAverageNumberOfSharesOutstandingBasic` fallback. Coverage on
+  labeled rows: **E/P 86% · B/M 88% · S/P 71%**.
+- Cap = unadjusted close (as-of date) × PIT shares. Sanity anchor: AAPL at the
+  last print ≈ **$4.66T** (14.77B sh × $315) — right order, right era.
+- Known limit (recorded): FSDS drops XBRL dimensions, so a dual-class name's
+  shares pick is its largest class — bias toward undercount/NaN, never invented
+  cap.
+
+## E/P is a REAL standalone signal — the first new one since momentum
+
+Single-feature rank IC, pooled: **E/P +0.0592 (t_nw +5.66)** — on par with roa
+(+0.060) and op_margin (+0.065), the strongest fundamentals in the stack. B/M is
+dead (−0.009, t −0.9); S/P flat (+0.013, t +0.9). bm_rank mean |corr| vs the 10
+fundamental ranks: 0.172 (max 0.345) — moderately overlapping, not orthogonal.
+
+## …and it still fails the model-level bar — decisively
+
+| arm | WF OOS IC | t_nw | CPCV mean | CPCV 5th pct |
+|---|---|---|---|---|
+| baseline (10 fundamentals) | **+0.0381** | +5.74 | **+0.0371** | +0.0118 |
+| +bm | +0.0372 | +5.56 | +0.0340 | +0.0118 |
+| +ep+bm+sp | +0.0360 | +5.37 | +0.0315 | **+0.0048** |
+
+Value doesn't merely fail to add — it actively dilutes: every arm is worse than
+baseline in BOTH walk-forward and CPCV, and the full value arm halves the CPCV
+5th percentile. E/P's information is evidently a re-expression of the
+earnings-quality block (earnings over price vs earnings over assets/equity) plus
+a price-level tilt the model doesn't want. This is the cleanest kill of the
+series: it never even won the walk-forward leg.
+
+**Kept:** the default-off plumbing (`prepare_features(extra_cols=…)`,
+`build_fundamental_panel(value_price=…)`, `VALUE_FEATURES`) and the PIT-shares
+recipe — the validated true-cap construction is now available for DISPLAY-grade
+market cap (markets-view sizing, universe description) independent of any
+modeling use.
+
+---
+
 # Momentum Feature Test — Real but Non-Additive (2026-07-03)
 
 Tested whether adding price momentum (12-1 and 6-1) to the fundamentals-only model
