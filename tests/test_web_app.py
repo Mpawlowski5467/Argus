@@ -132,3 +132,25 @@ def test_static_index_served_at_root(client):
     r = client.get("/")
     assert r.status_code == 200
     assert "app.js" in r.text and "scan" in r.text   # the real index.html
+
+
+def test_panel_routes_validate_role_and_serve_cache(client, monkeypatch):
+    class _Facade:
+        def panel_cached(self, cik):
+            return {"cik": cik, "context_hash": "abc123def456",
+                    "roles": {"bull": {"answer": "x"}, "bear": None,
+                              "risk": None, "synthesis": None},
+                    "complete": False}
+
+        def panel_role(self, cik, role):
+            return {"role": role, "answer": "memo", "refused": False,
+                    "suppressed": False, "cik": cik, "cached": False}
+
+    monkeypatch.setattr(STATE, "status", "ready")
+    monkeypatch.setattr(STATE, "adata", _Facade())
+    r = client.get("/api/panel/7")
+    assert r.status_code == 200 and r.json()["complete"] is False
+    r = client.post("/api/panel/7", json={"role": "trader"})
+    assert r.status_code == 422                       # TradingAgents' trader stays out
+    r = client.post("/api/panel/7", json={"role": "bear"})
+    assert r.status_code == 200 and r.json()["role"] == "bear"

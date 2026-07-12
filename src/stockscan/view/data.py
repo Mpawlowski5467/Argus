@@ -656,6 +656,54 @@ class ArgusData:
                                        "updated": stored["_updated"]}
         return ctx
 
+    def panel_cached(self, cik: int) -> dict:
+        """The analyst panel as currently cached for this name's LIVE context —
+        no LLM, no gate. The frontend paints whatever exists and offers to run
+        the missing roles; a context change (new filing, rank move) empties this
+        by construction (the hash moved)."""
+        from ..assist.analyst import ROLES, PanelCache
+        from ..assist.telemetry import context_hash
+
+        ctx = self.chat_context(int(cik))
+        h = context_hash(ctx)
+        with PanelCache() as pc:
+            roles = pc.get(int(cik), h)
+        return {"cik": int(cik), "context_hash": h,
+                "roles": {r: roles.get(r) for r in ROLES},
+                "complete": all(r in roles for r in ROLES)}
+
+    def panel_role(self, cik: int, role: str, llm=None) -> dict:
+        """Generate ONE panel memo under the caller's gate: grounded, judge-checked
+        (suppressed on drift), cached by (cik, context-hash, role), telemetry-logged.
+        Prior memos come from the cache so the frontend can chain role requests."""
+        import time
+
+        from ..assist.analyst import PanelCache, panel_role
+        from ..assist.telemetry import context_hash, record_turn
+
+        ctx = self.chat_context(int(cik))
+        h = context_hash(ctx)
+        client = llm or self._chat_llm()
+        with PanelCache() as pc:
+            cached = pc.get(int(cik), h)
+            if role in cached:
+                return {**cached[role], "cik": int(cik), "cached": True}
+            prior = {r: p["answer"] for r, p in cached.items()
+                     if not p.get("refused") and not p.get("suppressed")}
+            t0 = time.monotonic()
+            # the judge gets its OWN client so last_usage on `client` stays the
+            # memo generation's token count (telemetry attribution)
+            r = panel_role(role, ctx, client, prior=prior, judge_llm=self._chat_llm())
+            record_turn(f"panel:{role}", ctx, f"panel {role} memo", r,
+                        time.monotonic() - t0,
+                        usage=getattr(client, "last_usage", None))
+            # only CLEAN memos are cached: a refusal (fabrication retry exhausted) or
+            # a judge suppression is retryable model noise, not a fact about the data
+            # — caching it would pin the failure until the next filing
+            if not r.get("refused") and not r.get("suppressed"):
+                pc.put(int(cik), h, role, r)
+        return {**r, "cik": int(cik), "cached": False}
+
     def digest_brief(self, llm=None) -> dict:
         """The grounded LLM morning brief over :meth:`digest` (refuses over inventing)."""
         import time

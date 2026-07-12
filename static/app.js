@@ -361,8 +361,10 @@
       switchView("ticker");
       el("tk-body").innerHTML = '<div class="muted">loading …</div>';
       api("/ticker/" + cik).then(function (res) {
-        state.tk = { res: res, price: null, ohlc: null, quote: null, profile: null, events: null, news: null, watched: false, narr: null, position: null, posDraft: null };
+        state.tk = { res: res, price: null, ohlc: null, quote: null, profile: null, events: null, news: null, watched: false, narr: null, position: null, posDraft: null, panel: null };
         tickerChat.reset();   // a fresh name gets a fresh transcript
+        // whatever the panel cache holds for the LIVE context (no LLM, no gate)
+        api("/panel/" + cik).then(function (d) { if (state.cik === cik) { state.tk.panel = d; Ticker.render(); } }).catch(nop);
         Ticker.render();
         Promise.all([
           api("/price/" + cik).then(function (d) { state.tk.price = d; }).catch(nop),
@@ -445,6 +447,9 @@
       // breakdown (drivers + signals). The grounded template shows immediately; the
       // button upgrades to the local-model read; a dead LLM degrades back and says so.
       h.push(Ticker.aiReadBlock(t, r));
+      // analyst panel — four grounded memos (bull/bear/risk/synthesis); commentary
+      // over one month's data, cached per context, NEVER part of the signal
+      h.push(Ticker.panelBlock(t));
       // grounded chat — the narration made interactive; refuses over fabricating
       h.push(tickerChat.block());
       // news + events
@@ -470,6 +475,73 @@
       var n = c.n ? " (n=" + Number(c.n).toLocaleString() + ")" : "";
       var note = hr != null ? '<span class="conf-note">beat the median stock ' + hr + "% of the time OOS" + n + "</span>" : "";
       return '<span class="conf term ' + tone + '" data-g="confidence">confidence ' + c.score + "/100</span>" + note;
+    },
+    // -- analyst panel: bull / bear / risk / synthesis --------------------------
+    // Four grounded memos over the SAME context the chat uses, generated role-by-
+    // role (each request bounded; the page paints progressively). A memo that
+    // failed the faithfulness judge shows as withheld — never silently dropped.
+    // Cached per (name, context-hash): it regenerates when the DATA changes, so
+    // there is deliberately no "re-run" — same facts, same panel.
+    panelBlock: function (t) {
+      var p = t.panel;
+      var busy = state.panelRun === state.cik;
+      var h = '<div class="ai-read"><div class="ai-read-head"><span class="ai-tag">analyst panel</span>';
+      if (busy) h += '<span class="ai-status muted">writing ' + esc(state.panelRole || "") + " memo …</span>";
+      else if (t.panelBusy) h += '<span class="ai-status warn">another model call is running — try again shortly</span>';
+      else if (p && p.complete) h += '<span class="ai-status ok">local model · 4 grounded memos</span>';
+      else h += '<span class="ai-status muted">bull · bear · risk · synthesis</span>';
+      h += "</div>";
+      var roles = ["bull", "bear", "risk", "synthesis"];
+      var have = 0;
+      roles.forEach(function (role) {
+        var m = p && p.roles && p.roles[role];
+        if (m) {
+          have++;
+          var text = m.refused ? "[refused — could not stay grounded in this name's data]" : (m.shown || m.answer || "");
+          h += '<div class="panel-memo"><span class="panel-role">' + role + "</span>" +
+            '<span class="' + (m.refused || m.suppressed ? "muted" : "") + '">' + esc(text) + "</span></div>";
+        } else if (busy) {
+          h += '<div class="panel-memo muted"><span class="panel-role">' + role + "</span>pending …</div>";
+        }
+      });
+      h += '<div class="ai-read-tools">';
+      if (!(p && p.complete)) {
+        h += '<button class="mini ai-go" id="btn-panel"' + (busy ? " disabled" : "") + ">" +
+          (busy ? "running …" : have ? "finish analyst panel" : "✦ run analyst panel (local model)") + "</button>";
+      }
+      h += '<span class="ai-note">AI commentary over this month\'s data — not part of the signal, never advice' +
+        (p && p.complete ? "; regenerates when the data changes" : "") + "</span></div>";
+      return h + "</div>";
+    },
+    runPanel: function () {
+      if (state.panelRun) return;
+      var cik = state.cik;
+      var roles = ["bull", "bear", "risk", "synthesis"];
+      state.panelRun = cik;
+      if (state.tk) state.tk.panelBusy = false;
+      var done = function () {
+        state.panelRun = null; state.panelRole = null;
+        if (state.cik === cik && state.tk && state.tk.panel) {
+          var rs = state.tk.panel.roles || {};
+          state.tk.panel.complete = roles.every(function (r) { return rs[r]; });
+          Ticker.render();
+        }
+      };
+      var step = function (i) {
+        if (i >= roles.length || state.cik !== cik || !state.tk) return done();
+        var role = roles[i];
+        if (state.tk.panel && state.tk.panel.roles && state.tk.panel.roles[role]) return step(i + 1);
+        state.panelRole = role;
+        Ticker.render();
+        apiPost("/panel/" + cik, { role: role }).then(function (m) {
+          if (state.cik !== cik || !state.tk) return done();
+          if (m && m.busy) { state.tk.panelBusy = true; return done(); }
+          if (!state.tk.panel) state.tk.panel = { roles: {}, complete: false };
+          state.tk.panel.roles[role] = m;
+          step(i + 1);
+        }).catch(done);
+      };
+      step(0);
     },
     aiReadBlock: function (t, r) {
       // narr = the local-model result once generated (via /narrate), else null.
@@ -738,6 +810,7 @@
       var bc = el("btn-chart"); if (bc) bc.onclick = Ticker.toggleChart;
       var ws = el("wstar"); if (ws) ws.onclick = Ticker.toggleWatch;
       var bn = el("btn-narr"); if (bn) bn.onclick = Ticker.narrate;
+      var bp = el("btn-panel"); if (bp) bp.onclick = Ticker.runPanel;
       var bl = el("btn-live"); if (bl) bl.onclick = Ticker.live;
       var ba = el("btn-auto"); if (ba) ba.onclick = Ticker.autolive;
       var ps = el("btn-pos-save"); if (ps) ps.onclick = Ticker.savePosition;

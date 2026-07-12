@@ -117,7 +117,29 @@ def build_chat_context(res: dict, price_summary: dict | None = None,
             pr["adv_musd"] = round(float(adv) / 1e6, 1)
         display["price"] = {**pr, "note": (
             "trailing close-price summary — what already happened, not a forecast")}
-    return {**packet, "display": display}
+    ctx = {**packet, "display": display}
+    # every NEGATIVE numeric gets an abs() citable twin: prose naturally says "fell
+    # 12.7 points" for a -12.7 in the context, and the extractor reads that as a
+    # positive 12.7 — a spurious violation -> retry -> refusal. Same reasoning as
+    # the jsround/pct1 display twins; derived, never invented. (Found live via the
+    # analyst panel's bear memo, but the ask chat carried the identical risk.)
+    twins = sorted({round(abs(v), 4) for v in _walk_numbers(ctx) if v < 0})
+    if twins:
+        ctx["abs_twins"] = {"note": "absolute-value twins of the negative numbers "
+                                    "above, so 'fell X' phrasings ground", "values": twins}
+    return ctx
+
+
+def _walk_numbers(obj):
+    """Every numeric leaf in a nested context (dict/list scalars)."""
+    if isnum(obj):
+        yield float(obj)
+    elif isinstance(obj, dict):
+        for v in obj.values():
+            yield from _walk_numbers(v)
+    elif isinstance(obj, (list, tuple)):
+        for v in obj:
+            yield from _walk_numbers(v)
 
 
 def answer_about_company(res: dict, question: str, llm, history: list | None = None,

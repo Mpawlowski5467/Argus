@@ -206,3 +206,24 @@ def test_nightly_brief_is_grounded():
         return "Overnight: prices refreshed, 12 new articles extracted, 1 alert (NFLX +11)."
     r = nightly_brief(ctx, llm)
     assert r["grounded"] and not r["refused"]
+
+
+def test_chat_context_carries_abs_twins_for_negative_numbers():
+    """'fell 12.7 points' for a -12.7 in the context must ground: every negative
+    numeric gets an abs() citable twin (found live via the panel's bear memo)."""
+    from stockscan.assist.qa import build_chat_context
+    from stockscan.narrate.ground import check_grounding
+
+    res = {"packet": {"meta": {"ticker": "T"}, "model": {"percentile": 96},
+                      "signals": [{"id": "roe", "chg_pp": -12.7}]}}
+    ctx = build_chat_context({"packet": res["packet"], **res})
+    assert 12.7 in ctx["abs_twins"]["values"]
+    assert check_grounding("return on equity fell 12.7 percentage points", ctx) == []
+
+
+def test_chat_context_without_negatives_has_no_twin_block():
+    from stockscan.assist.qa import build_chat_context
+
+    ctx = build_chat_context({"packet": {"meta": {"ticker": "T"},
+                                         "model": {"percentile": 96}}})
+    assert "abs_twins" not in ctx
