@@ -54,3 +54,36 @@ class LocalLLM:
 
     def __call__(self, system: str, user: str, **kwargs) -> str:
         return self.complete(system, user, **kwargs)
+
+
+def make_llm(tier: str = "full") -> LocalLLM:
+    """The one place LLM clients are constructed, keyed by usage tier.
+
+    - ``"full"``  — narration: LLM_MODEL, uncapped, long timeout (the read is the point)
+    - ``"light"`` — routine minor-change narration + news extraction: LLM_LIGHT_MODEL
+    - ``"chat"``  — interactive surfaces (ask / book / explain-move / digest brief):
+      the chat model with a hard completion cap, short timeout, and reasoning off
+      (config LLM_CHAT_*; see the bench verdicts recorded there)
+
+    Local-only by decision (2026-07-11), not limitation: no cloud providers, no API
+    keys — portfolio data never leaves the machine for inference. If a provider is
+    ever added, it is one new class honoring the same ``complete(system, user) -> str``
+    contract, selected HERE, so the ~dozen call sites never change again.
+    """
+    from ..config import (
+        LLM_CHAT_MAX_TOKENS,
+        LLM_CHAT_MODEL,
+        LLM_CHAT_REASONING,
+        LLM_CHAT_TIMEOUT,
+        LLM_LIGHT_MODEL,
+    )
+
+    if tier == "chat":
+        return LocalLLM(model=LLM_CHAT_MODEL, timeout=LLM_CHAT_TIMEOUT,
+                        max_tokens=LLM_CHAT_MAX_TOKENS,
+                        reasoning_effort=LLM_CHAT_REASONING)
+    if tier == "light":
+        return LocalLLM(model=LLM_LIGHT_MODEL)
+    if tier == "full":
+        return LocalLLM()
+    raise ValueError(f"unknown LLM tier: {tier!r} (full | light | chat)")

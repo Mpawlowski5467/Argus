@@ -13,7 +13,7 @@ ranks vs that date's liquid cross-section, scored by the frozen artifact
 import argparse
 import json
 
-from stockscan.narrate.llm import LocalLLM
+from stockscan.narrate.llm import make_llm
 from stockscan.narrate.narrator import _ord
 from stockscan.serve import analyze, load_serve_data
 from stockscan.model import load_artifact
@@ -46,7 +46,7 @@ def main() -> int:
     print("loading data + frozen artifact ...")
     data = load_serve_data()
     artifact = load_artifact()
-    llm = None if args.no_llm else LocalLLM()
+    llm = None if args.no_llm else make_llm("full")
 
     failures = 0
     for company in args.companies:

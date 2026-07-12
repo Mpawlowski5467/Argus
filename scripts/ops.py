@@ -145,9 +145,8 @@ def job_news(state: OpsState, no_llm: bool = False, backfill: int = 0) -> dict:
     missing the current version. ``backfill=N`` instead paginates N pages of history per
     name to SEED the memory so recall's 'notable past' has depth on day one. Runs
     independent of price freshness — news is firewalled from the signal."""
-    from stockscan.config import LLM_LIGHT_MODEL
     from stockscan.intrinio_universe import load_universe
-    from stockscan.narrate.llm import LocalLLM
+    from stockscan.narrate.llm import make_llm
     from stockscan.newsmem import (
         NewsStore,
         backfill_watchlist,
@@ -160,7 +159,7 @@ def job_news(state: OpsState, no_llm: bool = False, backfill: int = 0) -> dict:
     if not wl:
         return _run_logged(state, job, lambda: {"noop": True, "note": "empty watchlist"})
     targets = watchlist_targets(wl, load_universe())
-    llm = None if no_llm else LocalLLM(model=LLM_LIGHT_MODEL)
+    llm = None if no_llm else make_llm("light")
 
     def _run() -> dict:
         with NewsStore() as store:
@@ -233,19 +232,11 @@ def job_digest(state: OpsState) -> dict:
     pass, and store it so the web digest card opens instantly. Fail-open: a down or
     refusing LLM stores nothing and the card falls back to on-demand generation."""
     from stockscan.assist.brief import build_brief_context, nightly_brief
-    from stockscan.config import (
-        LLM_CHAT_MAX_TOKENS,
-        LLM_CHAT_MODEL,
-        LLM_CHAT_REASONING,
-        LLM_CHAT_TIMEOUT,
-    )
-    from stockscan.narrate.llm import LocalLLM
+    from stockscan.narrate.llm import make_llm
 
     def _run() -> dict:
         ctx = build_brief_context(state)
-        llm = LocalLLM(model=LLM_CHAT_MODEL, timeout=LLM_CHAT_TIMEOUT,
-                       max_tokens=LLM_CHAT_MAX_TOKENS, reasoning_effort=LLM_CHAT_REASONING)
-        res = nightly_brief(ctx, llm)
+        res = nightly_brief(ctx, make_llm("chat"))
         if res.get("refused") or not res.get("answer"):
             return {"stored": False, "refused": bool(res.get("refused")),
                     "_status": "degraded"}
@@ -256,10 +247,21 @@ def job_digest(state: OpsState) -> dict:
     return _run_logged(state, "digest", _run)
 
 
+def job_judge(state: OpsState) -> dict:
+    """Advisory faithfulness pass over a sample of the last day's SHOWN LLM turns
+    (assist.telemetry) — paraphrase-level drift gets measured nightly instead of
+    assumed. Flags raise an in-app 'judge_flag' alert; never high-severity."""
+    from stockscan.assist.telemetry import judge_sample
+    from stockscan.narrate.llm import make_llm
+
+    since = (pd.Timestamp.now("UTC") - pd.Timedelta(days=1)).isoformat(timespec="seconds")
+    return _run_logged(state, "judge",
+                       lambda: judge_sample(state, make_llm("full"), since))
+
+
 def job_monitor(state: OpsState, no_llm: bool = False, edgar: bool = True,
                 alerts_ok: bool = True) -> dict:
-    from stockscan.narrate.llm import LocalLLM
-    from stockscan.config import LLM_LIGHT_MODEL
+    from stockscan.narrate.llm import make_llm
     from stockscan.ops.monitor import run_monitor
 
     # A degraded price night (alerts_ok=False) also disables narration: a
@@ -267,8 +269,8 @@ def job_monitor(state: OpsState, no_llm: bool = False, edgar: bool = True,
     # a full-tier narration would cache against that wrong percentile and reset the
     # materiality baseline. Template runs never cache, so no_llm here is safe.
     use_llm = not no_llm and alerts_ok
-    llm_full = LocalLLM() if use_llm else None
-    llm_light = LocalLLM(model=LLM_LIGHT_MODEL) if use_llm else None
+    llm_full = make_llm("full") if use_llm else None
+    llm_light = make_llm("light") if use_llm else None
     return _run_logged(state, "monitor", run_monitor, state,
                        llm_full=llm_full, llm_light=llm_light,
                        narrate=True, edgar=edgar, alerts_ok=alerts_ok)
@@ -325,6 +327,11 @@ def job_nightly(state: OpsState, no_llm: bool = False) -> int:
             job_digest(state)
         except Exception as exc:
             print(f"[digest] skipped: {type(exc).__name__}: {exc}")
+        # advisory faithfulness pass over yesterday's shown answers (sample of 3)
+        try:
+            job_judge(state)
+        except Exception as exc:
+            print(f"[judge] skipped: {type(exc).__name__}: {exc}")
 
     # health screen over tonight's end state — cheap; newly-failing criticals become
     # alerts (picked up by the notification below). Same never-fail-the-night wrap.
@@ -435,6 +442,8 @@ def main(argv=None) -> int:
     sub.add_parser("health")
     sub.add_parser("backup")
     sub.add_parser("digest")
+    lt = sub.add_parser("llm-turns")
+    lt.add_argument("--days", type=int, default=7)
     p = sub.add_parser("install-launchd")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--uninstall", action="store_true")
@@ -451,11 +460,31 @@ def main(argv=None) -> int:
 
     if args.cmd == "digest":
         from stockscan.assist.brief import build_brief_context, nightly_brief
-        from stockscan.narrate.llm import LocalLLM
+        from stockscan.narrate.llm import make_llm
 
         with OpsState() as state:
             ctx = build_brief_context(state)
-        print(nightly_brief(ctx, LocalLLM())["answer"])
+        # chat tier: capped + reasoning-off — same client the web digest card uses
+        print(nightly_brief(ctx, make_llm("chat"))["answer"])
+        return 0
+
+    if args.cmd == "llm-turns":
+        since = (pd.Timestamp.now("UTC")
+                 - pd.Timedelta(days=args.days)).isoformat(timespec="seconds")
+        with OpsState() as state:
+            s = state.llm_turn_stats(since)
+            print(f"last {args.days}d: {s['turns']} turns · {s['refused']} refused · "
+                  f"avg {s['avg_latency_ms']}ms · max {s['max_latency_ms']}ms · "
+                  f"{s['judged_with_issues']} judged-with-issues")
+            rows = state._db.execute(
+                "select ts, surface, refused, latency_ms, judged, judge_issues, "
+                "question from llm_turns where ts >= ? order by id desc limit 30",
+                (since,)).fetchall()
+            for r in rows:
+                mark = "REFUSED" if r[2] else ("ISSUES" if r[4] and r[5] not in
+                                               (None, "[]") else "ok")
+                print(f"  {r[0][:16]}  {r[1]:<9} {mark:<8} {r[3] or 0:>6}ms  "
+                      f"{(r[6] or '')[:60]}")
         return 0
 
     if args.cmd == "install-launchd":

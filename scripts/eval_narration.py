@@ -16,7 +16,7 @@ import numpy as np
 from stockscan.assist.judge import judge_narration
 from stockscan.model import load_artifact
 from stockscan.narrate.ground import check_grounding
-from stockscan.narrate.llm import LocalLLM
+from stockscan.narrate.llm import LocalLLM, make_llm
 from stockscan.narrate.narrator import news_ids, validate_narration
 from stockscan.narrate.packet import _strip_numbers
 from stockscan.news import company_news
@@ -62,7 +62,7 @@ def main() -> int:
     pool = cross[cross["liquidity_pass"]]["cik"].astype(int).tolist()
     rng = np.random.default_rng(args.seed)
     sample = [int(c) for c in rng.choice(pool, size=min(args.n, len(pool)), replace=False)]
-    llm = LocalLLM(model=args.model) if args.model else LocalLLM()
+    llm = LocalLLM(model=args.model) if args.model else make_llm("full")
     print(f"evaluating {len(sample)} names as of {str(as_of)[:10]} "
           f"with model {llm.model}\n")
 

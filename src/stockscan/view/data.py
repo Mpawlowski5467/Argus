@@ -465,9 +465,8 @@ class ArgusData:
         hash by design, so headline churn never busts the cache. A dead LLM
         endpoint degrades to the grounded template inside narrate_packet (never
         crashes) and narrate_smart keeps that out of the cache."""
-        from ..config import LLM_LIGHT_MODEL
         from ..narrate.cache import NarrationCache, narrate_smart
-        from ..narrate.llm import LocalLLM
+        from ..narrate.llm import make_llm
         from ..narrate.packet import news_context
 
         ctx = news_context(self._news_context(int(packet["meta"]["cik"])))
@@ -477,8 +476,8 @@ class ArgusData:
         if own:   # short-lived connection per call, like every DB touch on this facade
             cache = NarrationCache()
         try:
-            res = narrate_smart(packet, llm_full=llm_full or LocalLLM(),
-                                llm_light=llm_light or LocalLLM(model=LLM_LIGHT_MODEL),
+            res = narrate_smart(packet, llm_full=llm_full or make_llm("full"),
+                                llm_light=llm_light or make_llm("light"),
                                 cache=cache)
         finally:
             if own:
@@ -489,20 +488,12 @@ class ArgusData:
 
     @staticmethod
     def _chat_llm():
-        """The interactive-chat client: independently swappable model, hard token
-        cap, short timeout (config LLM_CHAT_*). Grounding checks every numeral no
+        """The interactive-chat client (make_llm 'chat' tier): independently swappable
+        model, hard token cap, short timeout. Grounding checks every numeral no
         matter the model, so a smaller/faster one loses polish, not honesty."""
-        from ..config import (
-            LLM_CHAT_MAX_TOKENS,
-            LLM_CHAT_MODEL,
-            LLM_CHAT_REASONING,
-            LLM_CHAT_TIMEOUT,
-        )
-        from ..narrate.llm import LocalLLM
+        from ..narrate.llm import make_llm
 
-        return LocalLLM(model=LLM_CHAT_MODEL, timeout=LLM_CHAT_TIMEOUT,
-                        max_tokens=LLM_CHAT_MAX_TOKENS,
-                        reasoning_effort=LLM_CHAT_REASONING)
+        return make_llm("chat")
 
     def chat_context(self, cik: int) -> dict:
         """The EXACT grounding context the ticker 'ask' hands the chat model: the
@@ -535,12 +526,18 @@ class ArgusData:
         assistant refuses (assist.core.grounded_answer) — never a guess, never
         advice. ``history`` rides in from the browser (the server stays stateless)
         and never expands the grounding domain."""
+        import time
+
         from ..assist.core import grounded_answer
         from ..assist.qa import CHAT_SYSTEM
+        from ..assist.telemetry import record_turn
 
         ctx = self.chat_context(int(cik))
-        r = grounded_answer(ctx, question, llm or self._chat_llm(),
-                            CHAT_SYSTEM, history=history)
+        client = llm or self._chat_llm()
+        t0 = time.monotonic()
+        r = grounded_answer(ctx, question, client, CHAT_SYSTEM, history=history)
+        record_turn("ask", ctx, question, r, time.monotonic() - t0,
+                    usage=getattr(client, "last_usage", None))
         meta = ctx.get("meta") or {}
         news = (ctx.get("context") or {}).get("news") or []
         return {**r, "cik": int(cik), "ticker": meta.get("ticker"),
@@ -555,11 +552,17 @@ class ArgusData:
         trace to it or the assistant refuses — never a guess, never a portfolio
         forecast, never advice. ``history`` rides in from the browser (the server
         stays stateless) and never expands the grounding domain."""
+        import time
+
         from ..assist.book import answer_about_book
+        from ..assist.telemetry import record_turn
 
         sc = self.scorecard()
-        r = answer_about_book(sc, question, llm or self._chat_llm(),
-                              history=history)
+        client = llm or self._chat_llm()
+        t0 = time.monotonic()
+        r = answer_about_book(sc, question, client, history=history)
+        record_turn("ask_book", sc, question, r, time.monotonic() - t0,
+                    usage=getattr(client, "last_usage", None))
         return {**r, "n_names": sc.get("n_total", 0), "as_of": sc.get("as_of")}
 
     def move_context(self, cik: int, horizon: str) -> tuple[dict, dict | None]:
@@ -603,9 +606,16 @@ class ArgusData:
     def move_answer(self, cik: int, horizon: str, bundle: dict, llm=None) -> dict:
         """The LLM half of "explain this move" — call ONLY under the single-flight
         gate, and only when :meth:`move_context` returned no deterministic answer."""
-        from ..assist.move import answer_from_context
+        import time
 
-        r = answer_from_context(bundle["ctx"], llm or self._chat_llm())
+        from ..assist.move import answer_from_context
+        from ..assist.telemetry import record_turn
+
+        client = llm or self._chat_llm()
+        t0 = time.monotonic()
+        r = answer_from_context(bundle["ctx"], client)
+        record_turn("move", bundle["ctx"], f"explain move {horizon}", r,
+                    time.monotonic() - t0, usage=getattr(client, "last_usage", None))
         return {**r, "cik": int(cik), "horizon": horizon, "ticker": bundle["ticker"]}
 
     def explain_move(self, cik: int, horizon: str, llm=None) -> dict:
@@ -648,9 +658,18 @@ class ArgusData:
 
     def digest_brief(self, llm=None) -> dict:
         """The grounded LLM morning brief over :meth:`digest` (refuses over inventing)."""
-        from ..assist.brief import nightly_brief
+        import time
 
-        return nightly_brief(self.digest(), llm or self._chat_llm())
+        from ..assist.brief import nightly_brief
+        from ..assist.telemetry import record_turn
+
+        ctx = self.digest()
+        client = llm or self._chat_llm()
+        t0 = time.monotonic()
+        r = nightly_brief(ctx, client)
+        record_turn("brief", ctx, "overnight operations brief", r,
+                    time.monotonic() - t0, usage=getattr(client, "last_usage", None))
+        return r
 
     def mark_alerts_seen(self, ids: list[int] | None = None) -> dict:
         """Acknowledge alerts from the UI (all unseen, or specific ids). Returns the

@@ -69,6 +69,26 @@ create table if not exists book (
     exited_as_of text,
     active integer not null default 1
 );
+create table if not exists llm_turns (
+    -- production LLM telemetry: one row per SHOWN grounded answer (ask / book /
+    -- move / brief / narration). Local-only observability — latency, retries,
+    -- refusals, and the nightly judge's verdict — so honesty gets measured in
+    -- production, not assumed from the bench scripts.
+    id integer primary key autoincrement,
+    ts text not null,
+    surface text not null,           -- ask | ask_book | move | brief | narrate
+    context_hash text not null,
+    context text,                    -- the grounding context JSON (for the judge)
+    question text,
+    answer text,
+    attempts integer,
+    refused integer not null default 0,
+    latency_ms integer,
+    tokens_in integer,
+    tokens_out integer,
+    judged integer not null default 0,
+    judge_issues text                -- JSON list once judged ([] = faithful)
+);
 create table if not exists kv (
     -- small operational singletons (e.g. the stored overnight brief): JSON values,
     -- last-write-wins, never history — job_runs is the history trail
@@ -92,8 +112,10 @@ def _utcnow() -> str:
 
 
 class OpsState:
-    def __init__(self, path: Path = OPS_STATE_PATH):
-        self.path = Path(path)
+    def __init__(self, path: Path | None = None):
+        # None resolves at CALL time (not def time) so tests can monkeypatch the
+        # module-level OPS_STATE_PATH and fail-open writers (telemetry) stay hermetic
+        self.path = Path(path) if path is not None else Path(OPS_STATE_PATH)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._db = sqlite3.connect(str(self.path), timeout=30.0)
         self._db.execute("pragma journal_mode=wal")
@@ -138,6 +160,52 @@ class OpsState:
             "order by id desc limit ?", (limit,)).fetchall()
         return [{"id": r[0], "job": r[1], "started": r[2], "finished": r[3],
                  "status": r[4]} for r in rows]
+
+    # -- LLM telemetry -----------------------------------------------------------
+    def log_llm_turn(self, surface: str, context_hash: str, question: str,
+                     answer: str, attempts: int, refused: bool,
+                     latency_ms: int | None, tokens_in: int | None,
+                     tokens_out: int | None, context: str | None = None) -> int:
+        cur = self._db.execute(
+            "insert into llm_turns (ts, surface, context_hash, context, question, "
+            "answer, attempts, refused, latency_ms, tokens_in, tokens_out) "
+            "values (?,?,?,?,?,?,?,?,?,?,?)",
+            (_utcnow(), surface, context_hash, context, question, answer,
+             attempts, int(bool(refused)), latency_ms, tokens_in, tokens_out),
+        )
+        self._db.commit()
+        return int(cur.lastrowid)
+
+    def unjudged_turns(self, since: str, limit: int = 5) -> list[dict]:
+        """Judge-eligible turns: shown (non-refused) answers with a stored context,
+        newest first — the nightly samples from these."""
+        rows = self._db.execute(
+            "select id, surface, context, question, answer from llm_turns "
+            "where judged = 0 and refused = 0 and context is not null and ts >= ? "
+            "order by id desc limit ?", (since, limit)).fetchall()
+        return [{"id": r[0], "surface": r[1], "context": r[2], "question": r[3],
+                 "answer": r[4]} for r in rows]
+
+    def set_turn_judgement(self, turn_id: int, issues: list) -> None:
+        self._db.execute(
+            "update llm_turns set judged = 1, judge_issues = ? where id = ?",
+            (json.dumps(issues, default=str), int(turn_id)))
+        self._db.commit()
+
+    def llm_turn_stats(self, since: str) -> dict:
+        """Aggregate telemetry for the digest/health surfaces: turn count, refusal
+        rate, latency percentiles-ish (avg/max), judged-issue count."""
+        row = self._db.execute(
+            "select count(*), sum(refused), avg(latency_ms), max(latency_ms) "
+            "from llm_turns where ts >= ?", (since,)).fetchone()
+        issues = self._db.execute(
+            "select count(*) from llm_turns where ts >= ? and judged = 1 "
+            "and judge_issues != '[]'", (since,)).fetchone()
+        n = int(row[0] or 0)
+        return {"turns": n, "refused": int(row[1] or 0),
+                "avg_latency_ms": int(row[2]) if row[2] is not None else None,
+                "max_latency_ms": int(row[3]) if row[3] is not None else None,
+                "judged_with_issues": int(issues[0] or 0)}
 
     # -- kv singletons -----------------------------------------------------------
     def kv_set(self, key: str, value: dict) -> None:

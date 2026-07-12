@@ -15,7 +15,7 @@ import time
 
 from stockscan.model import load_artifact
 from stockscan.narrate.cache import NarrationCache, narrate_smart
-from stockscan.narrate.llm import LocalLLM
+from stockscan.narrate.llm import LocalLLM, make_llm
 from stockscan.serve import analyze, build_cross_section, load_serve_data
 
 
@@ -58,7 +58,7 @@ def main() -> int:
     # ---- lazy narration for the top N through the identical analyze() path
     llm_full = llm_light = None
     if not args.no_llm:
-        llm_full = LocalLLM(model=args.model) if args.model else LocalLLM()
+        llm_full = LocalLLM(model=args.model) if args.model else make_llm("full")
         llm_light = LocalLLM(model=args.light) if args.light else None
     cache = NarrationCache()
 

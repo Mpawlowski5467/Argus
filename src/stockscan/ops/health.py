@@ -215,11 +215,15 @@ def run_checks(today=None, prices_dir: Path = PRICES_DIR) -> list[Check]:
         checks.append(Check("info", "web_ui", True,
                             f"{WEB_URL} not running (fine unless you expect it up)"))
 
-    # LLM endpoint (informational — template fallback is by design)
+    # LLM endpoint (informational — template fallback is by design). Probes the
+    # OpenAI-compatible /models route, which every supported server (Ollama,
+    # llama.cpp, vLLM, LM Studio) answers — the old Ollama-only /api/tags probe
+    # also used rstrip("/v1"), a CHARACTER-set strip that mangles base URLs
+    # ending in 'v' or '1'.
     try:
         import httpx
 
-        r = httpx.get(LLM_BASE_URL.rstrip("/v1") + "/api/tags", timeout=3.0)
+        r = httpx.get(LLM_BASE_URL.rstrip("/") + "/models", timeout=3.0)
         checks.append(Check("info", "llm", r.status_code == 200,
                             f"{LLM_BASE_URL} reachable" if r.status_code == 200
                             else f"status {r.status_code}"))
