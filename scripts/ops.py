@@ -15,7 +15,9 @@
   uv run python scripts/ops.py health
   uv run python scripts/ops.py backup              # snapshot the sqlite stores now
   uv run python scripts/ops.py digest              # overnight brief (local model, grounded)
-  uv run python scripts/ops.py install-launchd [--dry-run] [--uninstall]
+  uv run python scripts/ops.py morning             # 8am banner: unseen alerts + stored brief
+  uv run python scripts/ops.py install-launchd [--dry-run] [--uninstall]   # 3 agents:
+                                                   # nightly 22:45, web always-on, morning 08:00
 
 ``nightly`` is the one entry the scheduler needs: prices -> FSDS (when a new
 quarter is due) -> universe (when a month has passed) -> paper log (when a
@@ -42,7 +44,10 @@ from stockscan.ops.lock import JobAlreadyRunning, job_lock
 from stockscan.ops.state import OpsState
 
 LAUNCHD_LABEL = "com.stockscan.nightly"
+WEB_LABEL = "com.stockscan.web"
+MORNING_LABEL = "com.stockscan.morning"
 NIGHTLY_HOUR, NIGHTLY_MINUTE = 22, 45
+MORNING_HOUR, MORNING_MINUTE = 8, 0
 UNIVERSE_DUE_DAYS = 28
 
 
@@ -259,6 +264,48 @@ def job_judge(state: OpsState) -> dict:
                        lambda: judge_sample(state, make_llm("full"), since))
 
 
+def job_panels(state: OpsState, max_names: int = 25) -> dict:
+    """Pre-generate analyst panels for held + watched names while the model is warm
+    from the monitor pass — morning ticker pages open with all four memos waiting.
+    Idempotent via the (cik, context-hash) cache: an unchanged name costs four cache
+    hits, not eight model calls; refusals/suppressions are never cached, so they
+    simply retry tomorrow."""
+    from stockscan.assist.analyst import ROLES
+    from stockscan.view.data import ArgusData
+
+    def _run() -> dict:
+        held = {int(pos["cik"]) for pos in state.positions()}
+        watched = {int(w["cik"]) for w in state.watchlist()}
+        ciks = sorted(held) + sorted(watched - held)   # held names first
+        dropped = max(0, len(ciks) - max_names)
+        ciks = ciks[:max_names]
+        if not ciks:
+            return {"noop": True, "note": "no held or watched names"}
+        a = ArgusData.load()
+        stats = {"names": len(ciks), "generated": 0, "cached": 0,
+                 "refused": 0, "suppressed": 0, "errors": 0, "dropped": dropped}
+        for cik in ciks:
+            for role in ROLES:
+                try:
+                    r = a.panel_role(cik, role)
+                except Exception:
+                    stats["errors"] += 1
+                    continue
+                if r.get("cached"):
+                    stats["cached"] += 1
+                elif r.get("refused"):
+                    stats["refused"] += 1
+                elif r.get("suppressed"):
+                    stats["suppressed"] += 1
+                else:
+                    stats["generated"] += 1
+        if stats["errors"] and stats["errors"] >= stats["names"] * len(ROLES) // 2:
+            stats["_status"] = "degraded"
+        return stats
+
+    return _run_logged(state, "panels", _run)
+
+
 def job_monitor(state: OpsState, no_llm: bool = False, edgar: bool = True,
                 alerts_ok: bool = True) -> dict:
     from stockscan.narrate.llm import make_llm
@@ -333,6 +380,15 @@ def job_nightly(state: OpsState, no_llm: bool = False) -> int:
         except Exception as exc:
             print(f"[judge] skipped: {type(exc).__name__}: {exc}")
 
+    # analyst panels for held/watched names while the model is warm — a degraded
+    # price night skips this (jittered percentiles would be cached into the memos
+    # until the next context change; same policy as narration)
+    if not no_llm and not degraded:
+        try:
+            job_panels(state)
+        except Exception as exc:
+            print(f"[panels] skipped: {type(exc).__name__}: {exc}")
+
     # health screen over tonight's end state — cheap; newly-failing criticals become
     # alerts (picked up by the notification below). Same never-fail-the-night wrap.
     try:
@@ -358,51 +414,79 @@ def job_nightly(state: OpsState, no_llm: bool = False) -> int:
 
 # --- launchd ------------------------------------------------------------------------
 
-def _plist() -> dict:
+def _plists() -> dict[str, dict]:
+    """The three agents of daily operation: the 22:45 nightly (data + alerts +
+    reports), the always-on web app (KeepAlive — Argus is simply THERE at
+    localhost:8000), and the 08:00 morning banner (the nightly's own banner fires
+    ~23:30 and expires unseen; this one lands when the human does)."""
     uv = shutil.which("uv") or "/usr/local/bin/uv"
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    common = {"WorkingDirectory": str(REPO_ROOT), "ProcessType": "Background"}
     return {
-        "Label": LAUNCHD_LABEL,
-        "ProgramArguments": [uv, "run", "python", "scripts/ops.py", "nightly"],
-        "WorkingDirectory": str(REPO_ROOT),
-        "StartCalendarInterval": {"Hour": NIGHTLY_HOUR, "Minute": NIGHTLY_MINUTE},
-        "StandardOutPath": str(LOGS_DIR / "nightly.log"),
-        "StandardErrorPath": str(LOGS_DIR / "nightly.err.log"),
-        "ProcessType": "Background",
+        LAUNCHD_LABEL: {
+            "Label": LAUNCHD_LABEL,
+            "ProgramArguments": [uv, "run", "python", "scripts/ops.py", "nightly"],
+            "StartCalendarInterval": {"Hour": NIGHTLY_HOUR, "Minute": NIGHTLY_MINUTE},
+            "StandardOutPath": str(LOGS_DIR / "nightly.log"),
+            "StandardErrorPath": str(LOGS_DIR / "nightly.err.log"),
+            **common,
+        },
+        WEB_LABEL: {
+            "Label": WEB_LABEL,
+            "ProgramArguments": [uv, "run", "python", "scripts/argus_web.py"],
+            "RunAtLoad": True,
+            "KeepAlive": True,   # crash or reboot -> it comes back on its own
+            "StandardOutPath": str(LOGS_DIR / "web.log"),
+            "StandardErrorPath": str(LOGS_DIR / "web.err.log"),
+            **common,
+        },
+        MORNING_LABEL: {
+            "Label": MORNING_LABEL,
+            "ProgramArguments": [uv, "run", "python", "scripts/ops.py", "morning"],
+            "StartCalendarInterval": {"Hour": MORNING_HOUR, "Minute": MORNING_MINUTE},
+            "StandardOutPath": str(LOGS_DIR / "morning.log"),
+            "StandardErrorPath": str(LOGS_DIR / "morning.err.log"),
+            **common,
+        },
     }
 
 
 def install_launchd(dry_run: bool = False, uninstall: bool = False) -> int:
-    plist_path = Path.home() / "Library" / "LaunchAgents" / f"{LAUNCHD_LABEL}.plist"
     domain = f"gui/{os.getuid()}"
-    if uninstall:
+    worst = 0
+    for label, payload in _plists().items():
+        plist_path = Path.home() / "Library" / "LaunchAgents" / f"{label}.plist"
+        if uninstall:
+            if dry_run:
+                print(f"would: launchctl bootout {domain}/{label}; rm {plist_path}")
+                continue
+            subprocess.run(["launchctl", "bootout", f"{domain}/{label}"],
+                           capture_output=True)
+            plist_path.unlink(missing_ok=True)
+            print(f"uninstalled {label}")
+            continue
         if dry_run:
-            print(f"would: launchctl bootout {domain}/{LAUNCHD_LABEL}; rm {plist_path}")
-            return 0
-        subprocess.run(["launchctl", "bootout", f"{domain}/{LAUNCHD_LABEL}"],
-                       capture_output=True)
-        plist_path.unlink(missing_ok=True)
-        print(f"uninstalled {LAUNCHD_LABEL}")
-        return 0
-    payload = _plist()
-    if dry_run:
-        print(f"would write {plist_path}:\n{plistlib.dumps(payload).decode()}")
-        print(f"would: launchctl bootstrap {domain} {plist_path}")
-        return 0
-    plist_path.parent.mkdir(parents=True, exist_ok=True)
-    plist_path.write_bytes(plistlib.dumps(payload))
-    subprocess.run(["launchctl", "bootout", f"{domain}/{LAUNCHD_LABEL}"],
-                   capture_output=True)  # replace an older registration quietly
-    res = subprocess.run(["launchctl", "bootstrap", domain, str(plist_path)],
-                         capture_output=True, text=True)
-    if res.returncode != 0:
-        print(f"launchctl bootstrap failed ({res.returncode}): {res.stderr.strip()}\n"
-              f"plist written to {plist_path}; load manually with:\n"
-              f"  launchctl bootstrap {domain} {plist_path}")
-        return 1
-    print(f"installed + loaded {LAUNCHD_LABEL} "
-          f"(daily {NIGHTLY_HOUR:02d}:{NIGHTLY_MINUTE:02d}, logs in {LOGS_DIR})")
-    return 0
+            print(f"would write {plist_path}:\n{plistlib.dumps(payload).decode()}")
+            print(f"would: launchctl bootstrap {domain} {plist_path}")
+            continue
+        plist_path.parent.mkdir(parents=True, exist_ok=True)
+        plist_path.write_bytes(plistlib.dumps(payload))
+        subprocess.run(["launchctl", "bootout", f"{domain}/{label}"],
+                       capture_output=True)  # replace an older registration quietly
+        res = subprocess.run(["launchctl", "bootstrap", domain, str(plist_path)],
+                             capture_output=True, text=True)
+        if res.returncode != 0:
+            print(f"launchctl bootstrap failed for {label} ({res.returncode}): "
+                  f"{res.stderr.strip()}\nplist written to {plist_path}; load manually:\n"
+                  f"  launchctl bootstrap {domain} {plist_path}")
+            worst = 1
+            continue
+        print(f"installed + loaded {label}")
+    if not uninstall and not dry_run and worst == 0:
+        print(f"nightly {NIGHTLY_HOUR:02d}:{NIGHTLY_MINUTE:02d} · web always-on "
+              f"(http://127.0.0.1:8000) · morning banner {MORNING_HOUR:02d}:"
+              f"{MORNING_MINUTE:02d} · logs in {LOGS_DIR}")
+    return worst
 
 
 # --- CLI ------------------------------------------------------------------------------
@@ -442,6 +526,7 @@ def main(argv=None) -> int:
     sub.add_parser("health")
     sub.add_parser("backup")
     sub.add_parser("digest")
+    sub.add_parser("morning")
     lt = sub.add_parser("llm-turns")
     lt.add_argument("--days", type=int, default=7)
     p = sub.add_parser("install-launchd")
@@ -457,6 +542,13 @@ def main(argv=None) -> int:
         print("stockscan health:")
         print(text)
         return code
+
+    if args.cmd == "morning":
+        from stockscan.ops.notify import deliver_morning
+
+        with OpsState() as state:
+            _run_logged(state, "morning", deliver_morning, state)
+        return 0   # a missed banner is logged 'degraded', never a failed exit
 
     if args.cmd == "digest":
         from stockscan.assist.brief import build_brief_context, nightly_brief
