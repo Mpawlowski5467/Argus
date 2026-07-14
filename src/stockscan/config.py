@@ -188,7 +188,12 @@ HEALTH_FSDS_GRACE_DAYS = 100
 # displaying authoritatively while its OOS anchor drifts.
 HEALTH_HEAD_STALE_DAYS = 400
 # The local web UI, probed by the health check (info-level: not running is fine).
-WEB_URL = os.environ.get("STOCKSCAN_WEB_URL", "http://127.0.0.1:8000")
+# Host stays loopback by default (write endpoints, no auth — never 0.0.0.0);
+# the port knob exists because localhost real estate is shared with other projects.
+# WEB_URL (the health probe + links) follows the port unless overridden explicitly.
+WEB_HOST = os.environ.get("STOCKSCAN_WEB_HOST", "127.0.0.1")
+WEB_PORT = int(os.environ.get("STOCKSCAN_WEB_PORT", "8000"))
+WEB_URL = os.environ.get("STOCKSCAN_WEB_URL", f"http://{WEB_HOST}:{WEB_PORT}")
 
 # --- housekeeping: backups + log rotation (nightly) ------------------------------
 # The SQLite stores under artifacts/ hold the only irreplaceable personal state
