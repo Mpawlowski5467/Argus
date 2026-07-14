@@ -70,3 +70,53 @@ def test_high_severity_set_stays_curated():
     assert "filing_detected" not in HIGH_SEVERITY
     assert {"paper_degraded", "distress_risk", "universe_death",
             "health_critical"} <= HIGH_SEVERITY
+
+
+class _FakeState:
+    def __init__(self, alerts=(), brief=None):
+        self._alerts = list(alerts)
+        self._brief = brief
+
+    def alerts(self, unseen_only=True, limit=100):
+        return self._alerts[:limit]
+
+    def kv_get(self, key):
+        return self._brief if key == "digest_brief" else None
+
+
+def test_morning_summary_leads_with_high_alerts_then_brief():
+    from stockscan.ops.notify import morning_summary
+
+    st = _FakeState(
+        alerts=[_alert("distress_risk", "XYZ escalated overnight"),
+                _alert("percentile_move", "AAPL moved")],
+        brief={"answer": "Quiet night: all jobs finished ok. One name moved.",
+               "_updated": "2026-07-13T06:30:00+00:00"})
+    title, msg = morning_summary(st)
+    assert title == "Argus this morning · 1 alert(s)"
+    assert msg.splitlines()[0] == "XYZ escalated overnight"
+    assert "Quiet night: all jobs finished ok." in msg      # first sentence only
+    assert "One name moved" not in msg
+    assert "AAPL moved" not in msg                          # routine stays in-app
+
+
+def test_morning_summary_quiet_cases():
+    from stockscan.ops.notify import morning_summary
+
+    t, m = morning_summary(_FakeState())
+    assert t == "Argus this morning" and m == "quiet overnight — nothing needs attention"
+    _, m2 = morning_summary(_FakeState(alerts=[_alert("percentile_move")]))
+    assert "1 routine alert(s) waiting" in m2
+
+
+def test_deliver_morning_modes(monkeypatch):
+    from stockscan.ops import notify as n
+
+    st = _FakeState(alerts=[_alert("health_critical", "prices stale")])
+    assert n.deliver_morning(st, mode="off")["delivered"] is False
+    monkeypatch.setattr(n, "_osascript_available", lambda: True)
+    sent = []
+    monkeypatch.setattr(n, "notify_mac", lambda t, m: sent.append((t, m)) or True)
+    out = n.deliver_morning(st, mode="auto")
+    assert out["delivered"] is True and out["high"] == 1
+    assert "prices stale" in sent[0][1]

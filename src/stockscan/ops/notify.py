@@ -72,6 +72,46 @@ def nightly_summary(status: str, alerts: list[dict]) -> tuple[str, str]:
     return title, "\n".join(lines)
 
 
+def morning_summary(state) -> tuple[str, str]:
+    """(title, message) for the 8am banner. The nightly's own banner fires ~23:30
+    when nobody is awake and macOS banners quietly expire — this re-delivers what
+    still matters at a humane hour. Deterministic: the stored overnight brief is
+    READ (the nightly already wrote it); nothing is generated here."""
+    alerts = state.alerts(unseen_only=True, limit=500)
+    high = [a for a in alerts if a.get("kind") in HIGH_SEVERITY]
+    lines = [a["message"] for a in high[:_MAX_LINES]]
+    if len(high) > _MAX_LINES:
+        lines.append(f"… and {len(high) - _MAX_LINES} more in the app")
+
+    brief = state.kv_get("digest_brief") or {}
+    first = str(brief.get("answer") or "").split(". ")[0].strip()
+    if first:
+        lines.append(first if first.endswith(".") else first + ".")
+    if not lines:
+        n = len(alerts)
+        lines = [f"quiet overnight — {n} routine alert(s) waiting" if n
+                 else "quiet overnight — nothing needs attention"]
+    title = "Argus this morning" + (f" · {len(high)} alert(s)" if high else "")
+    return title, "\n".join(lines)
+
+
+def deliver_morning(state, mode: str = NOTIFY_MODE) -> dict:
+    """Push the morning banner. Same never-raise contract as the nightly's."""
+    alerts = state.alerts(unseen_only=True, limit=500)
+    high = sum(1 for a in alerts if a.get("kind") in HIGH_SEVERITY)
+    out = {"mode": mode, "alerts": len(alerts), "high": high, "delivered": False}
+    if mode == "off":
+        return out
+    if not _osascript_available():
+        out["mode"] = "unavailable"
+        return out
+    title, message = morning_summary(state)
+    out["delivered"] = notify_mac(title, message)
+    if not out["delivered"]:
+        out["_status"] = "degraded"
+    return out
+
+
 def deliver_nightly(status: str, alerts: list[dict], mode: str = NOTIFY_MODE) -> dict:
     """Push the end-of-nightly summary. Never raises — the nightly that just did the
     real work must not fail because a banner couldn't be shown."""
