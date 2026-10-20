@@ -7,6 +7,8 @@ FSDS/universe logic that must be safe to replay.
 """
 
 
+import time
+
 import httpx
 import pandas as pd
 import pytest
@@ -191,6 +193,85 @@ def test_refresh_never_replaces_with_shrunken_history(tmp_path, universe):
     b = pd.read_parquet(tmp_path / "BCO.parquet")
     assert len(b) == 20, "shrunken vendor response must not clobber good history"
 
+
+
+# --- bounded runs: a refused key, a vendor outage, an empty store -------------------
+# 2026-09/10: a lapsed subscription answered every call 401 and each nightly ran 2-6
+# days (4,137 columns x 6 backed-off retries) holding the ops lock.
+
+def _wide_universe(n: int) -> pd.DataFrame:
+    cols = ["AREF", *[f"C{i:02d}" for i in range(n - 1)]]
+    return pd.DataFrame({
+        "cik": range(1, n + 1), "column": cols, "security_id": [c.lower() for c in cols],
+        "ticker": cols, "name": cols, "active": [True] * n, "priority": [0] * n,
+        "clip_date": [pd.NaT] * n,
+    })
+
+
+def _refusing_transport(calls: list[str]):
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.path.split("/")[2])
+        return httpx.Response(401, json={"human": "No active subscription(s).",
+                                         "message": "An active subscription is required."})
+    return httpx.MockTransport(handler)
+
+
+@pytest.mark.parametrize("reference", ["AREF", "ABSENT"])
+def test_refresh_aborts_on_a_refused_key(tmp_path, reference):
+    """Whether the heartbeat column or a pooled one sees it first, a refused key ends
+    the run at once instead of being retried across the whole universe."""
+    from stockscan.prices import IntrinioAuthError
+
+    calls: list[str] = []
+    with pytest.raises(IntrinioAuthError):
+        refresh_active_prices(
+            _wide_universe(20), api_key="k", out_dir=tmp_path, reference_column=reference,
+            transport=_refusing_transport(calls), pause=0, workers=1, rebuild_cache=False)
+    assert len(calls) <= 3, f"kept fetching after the key was refused: {len(calls)} calls"
+
+
+def test_refresh_budget_drops_queued_columns(tmp_path):
+    dates = pd.bdate_range("2026-06-01", periods=5)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.split("/")[2] != "aref":
+            time.sleep(0.2)          # a vendor slowed to a crawl
+        return httpx.Response(200, json={"stock_prices": _rows(dates, [1, 2, 3, 4, 5])})
+
+    t0 = time.monotonic()
+    deltas = refresh_active_prices(
+        _wide_universe(10), api_key="k", out_dir=tmp_path, reference_column="AREF",
+        transport=httpx.MockTransport(handler), pause=0, workers=1, rebuild_cache=False,
+        max_runtime_s=0.3)
+    assert time.monotonic() - t0 < 1.5, "the budget did not stop the run"
+    assert deltas["timed_out"] is True
+    assert deltas["unfinished"] >= 4
+    assert deltas["_status"] == "degraded"
+    assert deltas["reference_ok"] is True
+
+
+def test_refresh_refuses_to_cache_an_empty_store(tmp_path, universe, monkeypatch):
+    """Nothing on disk to load must never overwrite the matrix cache with empty frames
+    (and the old code crashed on close.index.max().date() right after writing them)."""
+    import stockscan.config as config
+    from stockscan.panel import load_matrices, save_matrix_cache
+
+    cache = tmp_path / "cache"
+    monkeypatch.setattr(config, "MATRIX_CACHE_DIR", cache)
+    good = tmp_path / "good"
+    good.mkdir()
+    _frame(pd.bdate_range("2026-06-01", periods=5), [1.0, 2, 3, 4, 5], ticker="AREF"
+           ).to_parquet(good / "AREF.parquet", index=False)
+    save_matrix_cache(*load_matrices(prices_dir=good), cache_dir=cache, prices_dir=good)
+    before = {p.name: p.read_bytes() for p in cache.iterdir()}
+
+    empty_store = tmp_path / "prices"
+    deltas = refresh_active_prices(
+        universe, api_key="k", out_dir=empty_store, reference_column="AREF",
+        transport=_intrinio_transport({}, []), pause=0)
+    assert deltas["matrix_cache"] == {"refused": "price store loaded empty"}
+    assert deltas["_status"] == "degraded"
+    assert {p.name: p.read_bytes() for p in cache.iterdir()} == before
 
 # --- FSDS quarter logic --------------------------------------------------------------
 

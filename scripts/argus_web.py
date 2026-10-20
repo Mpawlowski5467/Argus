@@ -1,7 +1,7 @@
-"""Launch argus-web, the browser UI (needs the [web] extra: `uv sync --extra web`).
+"""Launch argus-web, the browser UI (needs the [web] extra: `uv run --extra web ...`).
 
-  uv run python scripts/argus_web.py
-  uv run python -m stockscan.web        # equivalent
+  uv run --extra web python scripts/argus_web.py
+  uv run --extra web python -m stockscan.web        # equivalent
 
 Then open http://127.0.0.1:8000/ — the mandala loader shows while the data loads,
 then reveals the scanner: scan (1), ticker (2), watch (3), paper (4), markets (5).

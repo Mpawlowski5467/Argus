@@ -29,18 +29,20 @@ import os
 import shutil
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import TimeoutError as FuturesTimeout
 from pathlib import Path
 
 import httpx
 import pandas as pd
 
-from ..config import INTRINIO_API_KEY
+from ..config import INTRINIO_API_KEY, PRICES_MAX_RUNTIME_S
 from ..edgar.delistings import LEDGER_PATH, build_delisting_ledger
 from ..edgar.fsds import FUNDAMENTALS_DIR, ingest_quarter, iter_quarters, parse_quarter
 from ..intrinio_universe import UNIVERSE_PATH, load_universe, select_universe
 from ..panel import load_matrices, save_matrix_cache
 from ..prices import (
     PRICES_DIR,
+    IntrinioAuthError,
     IntrinioTransientError,
     _intrinio_price_rows,
     _intrinio_to_tidy,
@@ -188,6 +190,7 @@ def refresh_active_prices(
     rebuild_cache: bool = True,
     transport: httpx.BaseTransport | None = None,
     log_every: int = 500,
+    max_runtime_s: float | None = PRICES_MAX_RUNTIME_S,
 ) -> dict:
     """Nightly job: full-history refetch of every ACTIVE universe column.
 
@@ -195,6 +198,11 @@ def refresh_active_prices(
     max date becomes the session target; any column already at the target is
     skipped without a request, so a re-run after a partial failure only touches
     what's left. Returns the deltas dict for the job log.
+
+    Bounded: a refused key (IntrinioAuthError) aborts the run at the first column
+    that sees it, and past ``max_runtime_s`` the columns still queued are dropped
+    and the run logs itself degraded — a vendor outage costs one bounded night,
+    not a days-long run holding the ops lock.
     """
     api_key = api_key or INTRINIO_API_KEY
     if not api_key:
@@ -236,26 +244,40 @@ def refresh_active_prices(
                 target_date = pd.read_parquet(ref_path, columns=["date"])["date"].max()
                 ref_ok = True
 
+        done = 0
+        timed_out = False
         with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
             futs = {
                 pool.submit(_refresh_one_column, client, col, g, start, end,
                             api_key, pause, out_dir, target_date): col
                 for col, g in rest
             }
-            for i, fut in enumerate(as_completed(futs)):
-                try:
-                    status, info = fut.result()
-                except Exception as e:  # one bad column must not strand the run
-                    print(f"column {futs[fut]} raised {type(e).__name__}: {e}", flush=True)
-                    status, info = "failed", {}
-                counts[status] += 1
-                if status == "written":
-                    new_rows += info["new_rows"]
-                    revised += int(info["revised"])
-                elif status == "suspect":
-                    suspects.append(futs[fut])
-                if log_every and (i + 1) % log_every == 0:
-                    print(f"[{i + 1}/{len(rest)}] {counts}", flush=True)
+            try:
+                for fut in as_completed(futs, timeout=max_runtime_s):
+                    try:
+                        status, info = fut.result()
+                    except IntrinioAuthError:
+                        raise   # the key itself is refused: no column can succeed
+                    except Exception as e:  # one bad column must not strand the run
+                        print(f"column {futs[fut]} raised {type(e).__name__}: {e}",
+                              flush=True)
+                        status, info = "failed", {}
+                    done += 1
+                    counts[status] += 1
+                    if status == "written":
+                        new_rows += info["new_rows"]
+                        revised += int(info["revised"])
+                    elif status == "suspect":
+                        suspects.append(futs[fut])
+                    if log_every and done % log_every == 0:
+                        print(f"[{done}/{len(rest)}] {counts}", flush=True)
+            except FuturesTimeout:
+                timed_out = True
+                print(f"[prices] {max_runtime_s}s budget spent at {done}/{len(rest)}; "
+                      "dropping the rest", flush=True)
+            finally:
+                # abort or budget: drop queued columns (in-flight ones finish)
+                pool.shutdown(wait=False, cancel_futures=True)
 
     deltas = {
         "active_columns": len(groups),
@@ -266,19 +288,30 @@ def refresh_active_prices(
         "revised_columns": revised,
         "suspect_columns": suspects[:20],
     }
-    if not ref_ok:
+    if timed_out:
+        deltas["timed_out"] = True
+        deltas["unfinished"] = len(rest) - done
+    if not ref_ok or timed_out:
         # the heartbeat column failed -> we could not set a session target, so the
-        # run's freshness is unverifiable; flag it degraded for the nightly gate
+        # run's freshness is unverifiable (or part of the store was never reached);
+        # flag it degraded for the nightly gate
         deltas["_status"] = "degraded"
     # rebuild the cache whenever something changed OR the cache is stale/missing
     # (a prior universe refresh invalidates the manifest without any write here)
-    from ..panel import matrix_cache_fresh
+    from ..panel import _prices_manifest, matrix_cache_fresh
 
     if rebuild_cache and (counts["written"] or not matrix_cache_fresh(prices_dir=out_dir)):
+        manifest = _prices_manifest(out_dir)   # before the slow load: see save_matrix_cache
         close, dv = load_matrices(prices_dir=out_dir)
-        save_matrix_cache(close, dv, prices_dir=out_dir)
-        deltas["matrix_cache"] = {"max_date": str(close.index.max().date()),
-                                  "n_columns": int(close.shape[1])}
+        if close.empty:
+            # nothing loaded is a read failure, not a market without prices: keep
+            # whatever cache is there (save_matrix_cache would refuse it anyway)
+            deltas["matrix_cache"] = {"refused": "price store loaded empty"}
+            deltas["_status"] = "degraded"
+        else:
+            save_matrix_cache(close, dv, prices_dir=out_dir, manifest=manifest)
+            deltas["matrix_cache"] = {"max_date": str(close.index.max().date()),
+                                      "n_columns": int(close.shape[1])}
     return deltas
 
 

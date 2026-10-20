@@ -177,6 +177,10 @@ OPS_STATE_PATH = Path(os.environ.get(                 # mutable ops state (SQLit
 PAPER_DIR = ARTIFACTS_DIR / "paper_forward"           # append-only paper-forward store
 LOGS_DIR = DATA_DIR / "logs"                          # launchd job stdout/stderr
 MATRIX_CACHE_DIR = PARQUET_DIR / "matrix_cache"       # wide close/dv matrices (fast load)
+# Wall-clock budget for the nightly price refetch (a healthy night takes ~15 min). Past
+# it the queued columns are dropped and the night is logged degraded, so a vendor
+# outage costs one bounded run instead of days spent holding the ops lock.
+PRICES_MAX_RUNTIME_S = 3 * 3600
 # Alert when a watchlist name's model percentile moves at least this much between
 # monitor runs (same threshold the narration cache treats as material).
 MONITOR_PCTILE_ALERT = 10

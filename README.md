@@ -135,10 +135,13 @@ research-grade validation, not a production-alpha claim.
 ## Setup
 
 ```bash
-uv sync --extra dev        # .venv on Python 3.12 + deps
-uv sync --extra web        # add FastAPI + uvicorn for the browser UI
-uv run pytest -q           # 400+ tests green (also enforced by CI on every PR)
+uv sync --extra dev --extra web   # .venv on Python 3.12 + deps, test tools, FastAPI + uvicorn
+uv run pytest -q                  # 400+ tests green (also enforced by CI on every PR)
 ```
+
+Name every extra in ONE call: `uv sync` is exact, so a later `uv sync --extra web` uninstalls
+`dev` (and a bare `uv sync` uninstalls both). The launchd agents run `uv run --extra web`, so
+a venv that uv recreates on its own still comes back able to serve the web UI.
 
 Keys go in `.env` (gitignored): `STOCKSCAN_INTRINIO_KEY` and `STOCKSCAN_PRICE_PROVIDER=intrinio`
 for survivorship-free prices + the universe. SEC EDGAR needs no key. The data store lives under
@@ -154,7 +157,7 @@ uv run python scripts/analyze.py AAPL [--as-of 2026-07-01]
 uv run python scripts/scan.py
 
 # the argus web UI (needs the [web] extra) — then open http://127.0.0.1:8000
-uv run python scripts/argus_web.py
+uv run --extra web python scripts/argus_web.py
 
 # unattended operation: one nightly dispatcher (ingest → monitor → paper-forward →
 # store backups); alerts are position-aware and cover paper-forward grading progress
