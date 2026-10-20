@@ -138,6 +138,59 @@ def test_intrinio_get_json_survives_http_date_retry_after(monkeypatch):
         assert intrinio_get_json(c, "/anything", {}) == {"ok": 1}
 
 
+
+def test_intrinio_get_json_lapsed_subscription_is_fatal_at_once(monkeypatch):
+    """2026-09: Intrinio answered every call with 401 'No active subscription(s).' and
+    the retry loop treated it as a blip — 6 backed-off tries per call, days per night.
+    That body is the key being refused: raise at once, no sleeping, key not echoed."""
+    naps = []
+    monkeypatch.setattr(prices_mod.time, "sleep", naps.append)
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        return httpx.Response(401, json={
+            "human": "No active subscription(s).",
+            "message": "An active subscription is required to view this data."})
+
+    with httpx.Client(base_url="https://x.test", transport=httpx.MockTransport(handler)) as c:
+        try:
+            intrinio_get_json(c, "/securities/AAPL/prices", {"api_key": "SECRET-KEY"})
+            raise AssertionError("expected IntrinioAuthError")
+        except prices_mod.IntrinioAuthError as exc:
+            assert "No active subscription" in str(exc)
+            assert "SECRET-KEY" not in str(exc)
+    assert calls["n"] == 1 and naps == []
+
+
+def test_intrinio_get_json_401_on_every_try_is_an_auth_error(monkeypatch):
+    """A bare 401 is retried (auth blips happen), but one that never clears is the key
+    being refused — and must NOT be catchable as a per-column transient failure."""
+    monkeypatch.setattr(prices_mod.time, "sleep", lambda s: None)
+
+    def handler(request):
+        return httpx.Response(401)
+
+    with httpx.Client(base_url="https://x.test", transport=httpx.MockTransport(handler)) as c:
+        try:
+            intrinio_get_json(c, "/anything", {}, max_tries=3)
+            raise AssertionError("expected IntrinioAuthError")
+        except prices_mod.IntrinioAuthError as exc:
+            assert not isinstance(exc, prices_mod.IntrinioTransientError)
+
+
+def test_intrinio_get_json_401_blip_is_still_retried(monkeypatch):
+    monkeypatch.setattr(prices_mod.time, "sleep", lambda s: None)
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        return httpx.Response(401) if calls["n"] == 1 else httpx.Response(200, json={"ok": 1})
+
+    with httpx.Client(base_url="https://x.test", transport=httpx.MockTransport(handler)) as c:
+        assert intrinio_get_json(c, "/anything", {}) == {"ok": 1}
+    assert calls["n"] == 2
+
 def _price_rows(dates, closes):
     return [{"date": d, "adj_open": c, "adj_high": c, "adj_low": c,
              "adj_close": c, "adj_volume": 1000} for d, c in zip(dates, closes)]

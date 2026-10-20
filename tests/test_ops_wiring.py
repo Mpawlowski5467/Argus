@@ -233,3 +233,38 @@ def test_nightly_refreshes_the_ledger_before_the_universe():
     assert "_delistings_due" in first_line, "the quarterly stage must be gated on a due check"
     assert first_line["job_delistings"] < first_line["job_universe"], (
         "job_delistings must run before job_universe — select_universe reads the ledger")
+
+
+
+# --- the 2026-09/10 outage: extras lost, a dead vendor killing the night --------------
+
+def test_every_launchd_agent_names_the_web_extra(monkeypatch, tmp_path):
+    """uv recreated the shared .venv from a bare `uv run` (08:00 morning job, after a
+    managed-interpreter upgrade) with no extras, and the KeepAlive web agent crash-
+    looped on a missing uvicorn for four weeks. Whichever agent triggers the next
+    recreation must leave a venv that can serve."""
+    monkeypatch.setattr(ops, "LOGS_DIR", tmp_path)
+    for label, payload in ops._plists().items():
+        args = payload["ProgramArguments"]
+        assert args[1:5] == ["run", "--extra", "web", "python"], (label, args)
+
+
+def _calls_inside_try(fn: ast.FunctionDef) -> set[str]:
+    names = set()
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Try):
+            for stmt in node.body:
+                names |= {n.func.id for n in ast.walk(stmt)
+                          if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+    return names
+
+
+def test_nightly_survives_a_failed_price_or_universe_stage():
+    """Static: job_prices (and job_universe, same vendor) raising used to end the night
+    before monitor/backup/health/notify, so five weeks of dead prices alerted nobody."""
+    tree = ast.parse(_OPS_PATH.read_text())
+    fn = next(n for n in ast.walk(tree)
+              if isinstance(n, ast.FunctionDef) and n.name == "job_nightly")
+    guarded = _calls_inside_try(fn)
+    for job in ("job_prices", "job_universe"):
+        assert job in guarded, f"{job} must not be able to take the rest of the night down"

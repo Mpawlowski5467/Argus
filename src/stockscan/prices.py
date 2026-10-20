@@ -160,6 +160,28 @@ class IntrinioTransientError(Exception):
     """
 
 
+class IntrinioAuthError(Exception):
+    """The vendor rejected the API key itself (lapsed subscription, revoked key) —
+    fatal for the whole run, neither per-security nor transient.
+
+    Deliberately NOT an IntrinioTransientError: per-column handlers catch that and
+    move on, which is how a lapsed subscription (2026-09) became 4,137 columns x 6
+    backed-off retries — nightlies that ran for days holding the ops lock.
+    """
+
+
+def _no_subscription(resp: httpx.Response) -> str | None:
+    """Intrinio's explicit 'no active subscription' 401 body -> its message, else None."""
+    try:
+        body = resp.json()
+    except ValueError:
+        return None
+    if not isinstance(body, dict):
+        return None
+    text = " ".join(str(body.get(k) or "") for k in ("human", "message")).strip()
+    return text if "subscription" in text.lower() else None
+
+
 def _retry_after_seconds(resp: httpx.Response, attempt: int) -> float:
     try:
         return float(resp.headers.get("retry-after") or 0) or min(60, 5 * 2**attempt)
@@ -174,20 +196,29 @@ def intrinio_get_json(client: httpx.Client, path: str, params: dict, max_tries: 
     404 unknown — genuinely no data for this identifier). Transient conditions
     (network errors, 5xx, 429, 401 auth blips) are retried; on exhaustion raises
     IntrinioTransientError so callers can leave the work item to be retried later
-    instead of caching a wrong 'no data' answer.
+    instead of caching a wrong 'no data' answer. A 401 that names the subscription,
+    or a 401 on every attempt, is the key itself being refused: IntrinioAuthError.
     """
+    n_401 = 0
     for attempt in range(max_tries):
         try:
             resp = client.get(path, params=params)
         except httpx.HTTPError:
             time.sleep(min(30, 2**attempt))
             continue
+        if resp.status_code == 401:
+            reason = _no_subscription(resp)
+            if reason:
+                raise IntrinioAuthError(f"Intrinio refused the key on {path}: {reason}")
+            n_401 += 1
         if resp.status_code in (429, 401) or resp.status_code >= 500:
             time.sleep(_retry_after_seconds(resp, attempt))
             continue
         if resp.status_code != 200:
             return None  # 4xx: permanently unavailable for this identifier
         return resp.json()
+    if n_401 == max_tries:
+        raise IntrinioAuthError(f"Intrinio answered 401 on all {max_tries} tries for {path}")
     raise IntrinioTransientError(f"retries exhausted for {path}")
 
 

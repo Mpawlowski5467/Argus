@@ -398,11 +398,19 @@ def job_nightly(state: OpsState, no_llm: bool = False) -> int:
     if reaped:
         print(f"[reap] {len(reaped)} stranded 'running' row(s) marked aborted: "
               + ", ".join(sorted({r['job'] for r in reaped})))
-    deltas = job_prices(state)
+    # Wrapped: a dead price vendor (lapsed subscription, outage) used to raise straight
+    # out of the night, so monitor/backup/health/notify never ran and five weeks of
+    # failed nights told nobody. Now the night goes on degraded, and the health screen
+    # (stale prices = critical) is what reaches the owner.
+    try:
+        deltas = job_prices(state)
+    except Exception as exc:
+        print(f"[prices] failed: {type(exc).__name__}: {exc}")
+        deltas = {"reference_ok": False}
     checked = max(1, deltas.get("active_columns", 1))
-    # degraded if too many columns failed OR the heartbeat column itself failed
-    # (then freshness is unverifiable and the whole store may be a day behind)
-    degraded = (deltas.get("failed", 0) / checked > 0.02
+    # degraded if too many columns failed or went unreached, OR the heartbeat column
+    # itself failed (then freshness is unverifiable; the store may be a day behind)
+    degraded = ((deltas.get("failed", 0) + deltas.get("unfinished", 0)) / checked > 0.02
                 or not deltas.get("reference_ok", True))
 
     job_fsds(state)
@@ -420,8 +428,13 @@ def job_nightly(state: OpsState, no_llm: bool = False) -> int:
     else:
         print("[delistings] not due")
 
+    # same wrap as delistings: the universe rides the same vendor as prices, and a
+    # failed refresh leaves the map exactly as stale as it was a minute earlier
     if _universe_due(state):
-        job_universe(state)
+        try:
+            job_universe(state)
+        except Exception as exc:
+            print(f"[universe] skipped: {type(exc).__name__}: {exc}")
     else:
         print("[universe] not due")
 
@@ -508,14 +521,21 @@ def _plists() -> dict[str, dict]:
     """The three agents of daily operation: the 22:45 nightly (data + alerts +
     reports), the always-on web app (KeepAlive — Argus is simply THERE at
     localhost:8000), and the 08:00 morning banner (the nightly's own banner fires
-    ~23:30 and expires unseen; this one lands when the human does)."""
+    ~23:30 and expires unseen; this one lands when the human does).
+
+    Every agent runs ``uv run --extra web``: ``uv run`` re-syncs the shared .venv,
+    and when uv replaces the managed interpreter it RECREATES the venv with only the
+    extras that invocation names. On 2026-09-20 the bare 08:00 morning run did exactly
+    that, and the always-on web app then crash-looped 84k times on a missing uvicorn
+    until someone reinstalled the extra by hand."""
     uv = shutil.which("uv") or "/usr/local/bin/uv"
+    uv_run = [uv, "run", "--extra", "web", "python"]
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     common = {"WorkingDirectory": str(REPO_ROOT), "ProcessType": "Background"}
     return {
         LAUNCHD_LABEL: {
             "Label": LAUNCHD_LABEL,
-            "ProgramArguments": [uv, "run", "python", "scripts/ops.py", "nightly"],
+            "ProgramArguments": [*uv_run, "scripts/ops.py", "nightly"],
             "StartCalendarInterval": {"Hour": NIGHTLY_HOUR, "Minute": NIGHTLY_MINUTE},
             "StandardOutPath": str(LOGS_DIR / "nightly.log"),
             "StandardErrorPath": str(LOGS_DIR / "nightly.err.log"),
@@ -523,7 +543,7 @@ def _plists() -> dict[str, dict]:
         },
         WEB_LABEL: {
             "Label": WEB_LABEL,
-            "ProgramArguments": [uv, "run", "python", "scripts/argus_web.py"],
+            "ProgramArguments": [*uv_run, "scripts/argus_web.py"],
             "RunAtLoad": True,
             "KeepAlive": True,   # crash or reboot -> it comes back on its own
             "StandardOutPath": str(LOGS_DIR / "web.log"),
@@ -532,7 +552,7 @@ def _plists() -> dict[str, dict]:
         },
         MORNING_LABEL: {
             "Label": MORNING_LABEL,
-            "ProgramArguments": [uv, "run", "python", "scripts/ops.py", "morning"],
+            "ProgramArguments": [*uv_run, "scripts/ops.py", "morning"],
             "StartCalendarInterval": {"Hour": MORNING_HOUR, "Minute": MORNING_MINUTE},
             "StandardOutPath": str(LOGS_DIR / "morning.log"),
             "StandardErrorPath": str(LOGS_DIR / "morning.err.log"),

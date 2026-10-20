@@ -9,7 +9,6 @@ filing-date PIT join (see stockscan.pit) arrive in Phase 1.
 
 from __future__ import annotations
 
-import glob
 import json
 import os
 from pathlib import Path
@@ -21,9 +20,22 @@ from .config import LABEL_HORIZON_DAYS
 from .prices import PRICES_DIR
 
 
+def _price_files(prices_dir=PRICES_DIR) -> list[str]:
+    """Sorted per-column parquet paths. A missing directory is an empty store, but an
+    UNREADABLE one raises: glob swallows the OSError and reports zero files, which is
+    how a macOS privacy denial on the launchd job (EPERM, 2026-09) passed for an empty
+    store and got an empty matrix cache written over the real one."""
+    try:
+        names = os.listdir(prices_dir)
+    except FileNotFoundError:
+        return []
+    return sorted(os.path.join(prices_dir, n) for n in names
+                  if n.endswith(".parquet") and not n.startswith("."))
+
+
 def load_close_matrix(tickers=None, prices_dir=PRICES_DIR) -> pd.DataFrame:
     """Wide matrix of adjusted closes: index = trading date, columns = ticker."""
-    files = sorted(glob.glob(str(prices_dir / "*.parquet")))
+    files = _price_files(prices_dir)
     if not files:
         return pd.DataFrame()
     src = "read_parquet([" + ",".join(f"'{f}'" for f in files) + "], union_by_name=true)"
@@ -42,7 +54,7 @@ def load_matrices(tickers=None, prices_dir=PRICES_DIR, with_open: bool = False):
     union_by_name: files written after the Phase-5 schema addition carry extra
     unadjusted columns (uclose/uvolume) that older files lack.
     """
-    files = sorted(glob.glob(str(prices_dir / "*.parquet")))
+    files = _price_files(prices_dir)
     if not files:
         return (pd.DataFrame(),) * (3 if with_open else 2)
     src = "read_parquet([" + ",".join(f"'{f}'" for f in files) + "], union_by_name=true)"
@@ -84,16 +96,35 @@ def _prices_manifest(prices_dir=PRICES_DIR) -> str:
     import hashlib
 
     entries = []
-    for f in sorted(glob.glob(str(Path(prices_dir) / "*.parquet"))):
+    for f in _price_files(prices_dir):
         st = os.stat(f)
         entries.append(f"{os.path.basename(f)}:{st.st_size}:{st.st_mtime_ns}")
     return hashlib.sha256("\n".join(entries).encode()).hexdigest()[:16]
 
 
 def save_matrix_cache(close: pd.DataFrame, dv: pd.DataFrame, cache_dir=None,
-                      prices_dir=PRICES_DIR) -> None:
+                      prices_dir=PRICES_DIR, manifest: str | None = None) -> None:
+    """Commit (close, dv) as the cache so that no crash leaves a meta.json vouching for
+    data files it was not written with.
+
+    meta.json is retired FIRST (from then on the cache reads stale -> slow path), the
+    data files are swapped, and meta.json is written LAST, recording the size of each
+    file it describes. Writing meta last without retiring it first is what broke on
+    2026-09-19: the data swap landed, the meta rename hit EPERM, and the previous
+    meta — whose manifest still matched the store — vouched for empty frames for a
+    month. ``manifest`` lets the caller pass the fingerprint taken BEFORE its slow
+    load, so a file landing mid-load leaves the cache stale rather than mislabeled.
+
+    An empty matrix is refused outright: 'zero prices' is never a valid cache, and
+    serving one takes the whole app down ('no prices on disk').
+    """
+    if close.empty or dv.empty:
+        raise ValueError("refusing to cache an empty price matrix")
     close_p, dv_p, meta_p = matrix_cache_paths(cache_dir)
     close_p.parent.mkdir(parents=True, exist_ok=True)
+    if manifest is None:
+        manifest = _prices_manifest(prices_dir)
+    meta_p.unlink(missing_ok=True)
     for frame, path in ((close, close_p), (dv, dv_p)):
         tmp = path.with_name("." + path.name + ".tmp")
         frame.to_parquet(tmp)
@@ -101,29 +132,40 @@ def save_matrix_cache(close: pd.DataFrame, dv: pd.DataFrame, cache_dir=None,
     tmp = meta_p.with_name("." + meta_p.name + ".tmp")
     tmp.write_text(json.dumps({
         "built_at": str(pd.Timestamp.now("UTC")),
-        "source_manifest": _prices_manifest(prices_dir),
-        "max_date": str(close.index.max().date()) if len(close.index) else None,
+        "source_manifest": manifest,
+        "max_date": str(close.index.max().date()),
         "n_columns": int(close.shape[1]),
+        "files": {p.name: p.stat().st_size for p in (close_p, dv_p)},
     }))
     os.replace(tmp, meta_p)
 
 
 def matrix_cache_fresh(cache_dir=None, prices_dir=PRICES_DIR) -> bool:
+    """Meta matches the per-column store AND the data files are the ones it was
+    written with. Unverifiable (unreadable store, torn files) reads as not fresh."""
     _, _, meta_p = matrix_cache_paths(cache_dir)
     if not meta_p.exists():
         return False
     try:
         meta = json.loads(meta_p.read_text())
+        if meta.get("source_manifest") != _prices_manifest(prices_dir):
+            return False
+        # caches written before sizes were recorded carry no "files"; for those the
+        # loader's empty-frame refusal is the backstop
+        return all((meta_p.parent / name).stat().st_size == size
+                   for name, size in (meta.get("files") or {}).items())
     except (OSError, json.JSONDecodeError):
         return False
-    return meta.get("source_manifest") == _prices_manifest(prices_dir)
 
 
 def load_matrices_cached(prices_dir=PRICES_DIR, cache_dir=None):
-    """(close, dv) from the cache when fresh, else the slow path (never stale)."""
+    """(close, dv) from the cache when fresh, else the slow path (never stale, never
+    an empty cached matrix — that is a torn cache, not a store with no prices)."""
     close_p, dv_p, _ = matrix_cache_paths(cache_dir)
     if close_p.exists() and dv_p.exists() and matrix_cache_fresh(cache_dir, prices_dir):
-        return pd.read_parquet(close_p), pd.read_parquet(dv_p)
+        close, dv = pd.read_parquet(close_p), pd.read_parquet(dv_p)
+        if not close.empty and not dv.empty:
+            return close, dv
     return load_matrices(prices_dir=prices_dir)
 
 
