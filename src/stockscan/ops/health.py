@@ -18,7 +18,9 @@ import pandas as pd
 
 from ..config import (
     ARTIFACTS_DIR,
+    FILING_FLAGS,
     HEALTH_DELIST_LEDGER_DAYS,
+    HEALTH_FILING_FLAGS_DAYS,
     HEALTH_FSDS_GRACE_DAYS,
     HEALTH_HEAD_STALE_DAYS,
     HEALTH_PRICE_STALE_DAYS,
@@ -243,6 +245,30 @@ def delisting_ledger(today, ledger_path: Path = None,
         f"it already has; {fix}")
 
 
+def filing_flags_freshness(today, cursor: dict | None, enabled: bool = True,
+                           stale_days: int = HEALTH_FILING_FLAGS_DAYS) -> Check:
+    """Warn when the 8-K full-text pass has stopped completing.
+
+    Its backend (efts.sec.gov) is undocumented, and the pass fails OPEN — an outage or a
+    schema change produces no alerts, which looks exactly like a quiet week. The monitor
+    holds the cursor on any failure and counts failed nights, so both an aging cursor and
+    a run of errors are visible here instead."""
+    if not enabled:
+        return Check("info", "filing_flags", True, "disabled (STOCKSCAN_8K_FLAGS=off)")
+    if not cursor or not cursor.get("enddt"):
+        return Check("info", "filing_flags", True, "never completed yet")
+    age = (pd.Timestamp(today).normalize() - pd.Timestamp(cursor["enddt"]).normalize()).days
+    errs = int(cursor.get("errors_in_a_row") or 0)
+    ok = age <= stale_days and errs < 3
+    detail = f"covered through {cursor['enddt']} ({age}d ago)"
+    if errs:
+        detail += f"; {errs} failed night(s) in a row"
+    if not ok:
+        detail += (" — the full-text 8-K search is not completing; "
+                   "see `ops.py filing-flags --dry-run`")
+    return Check("warn", "filing_flags", ok, detail)
+
+
 def llm_models_present(missing: list[str] | None = None) -> Check:
     """Warn when a model Argus is CONFIGURED to serve is not installed.
 
@@ -356,6 +382,8 @@ def run_checks(today=None, prices_dir: Path = PRICES_DIR) -> list[Check]:
 
         with OpsState(OPS_STATE_PATH) as st:
             last = st.last_run("nightly")
+            flag_cursor = st.kv_get("filing_flags_cursor")
+        checks.append(filing_flags_freshness(t, flag_cursor, enabled=FILING_FLAGS))
         if last is None:
             checks.append(Check("info", "nightly_job", True, "never run yet"))
         else:

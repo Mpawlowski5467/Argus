@@ -184,6 +184,44 @@ PRICES_MAX_RUNTIME_S = 3 * 3600
 # Alert when a watchlist name's model percentile moves at least this much between
 # monitor runs (same threshold the narration cache treats as material).
 MONITOR_PCTILE_ALERT = 10
+# 8-K filing flags (nightly, in the monitor): accounting/listing trouble in a watched or
+# HELD name's 8-K (8-K/A included). Display/alert only — firewalled from the signal like
+# the risk heads: writes the filing_flags table and alerts, never signal_state, the packet
+# or any score. Two detectors: "item" rules read the 8-K item codes in the submissions
+# JSON the monitor already fetches (no extra requests); "q" rules run one EDGAR full-text
+# search (efts.sec.gov) per rule over all names. A "critical" match raises eightk_critical
+# (macOS banner); "flag"-only matches raise eightk_flag (in-app). Backend contract:
+# docs/audit/rea-phase3-edgar-fts/efts_api.md.
+FILING_FLAGS = os.environ.get("STOCKSCAN_8K_FLAGS", "on").strip().lower() not in (
+    "off", "0", "false", "no")
+FILING_FLAG_RULES = (
+    {"id": "nonreliance_402", "item": "4.02", "tier": "critical",
+     "label": "item 4.02 non-reliance"},
+    {"id": "delisting_301", "item": "3.01", "tier": "critical",
+     "label": "item 3.01 delisting notice"},
+    {"id": "auditor_change_401", "item": "4.01", "tier": "flag",
+     "label": "item 4.01 auditor change"},
+    {"id": "going_concern", "q": '"going concern"', "tier": "critical", "label": "going concern"},
+    # the Item 4.02 caption, not bare "non-reliance": that matched legal-opinion boilerplate
+    # (an EX-5.1 in the 2026-10-20 dry-run); the caption hit 27/35 genuine 4.02 8-Ks
+    {"id": "non_reliance", "q": '"non-reliance on previously issued"', "tier": "critical",
+     "label": "non-reliance"},
+    {"id": "material_weakness", "q": '"material weakness"', "tier": "flag",
+     "label": "material weakness"},
+    {"id": "restatement", "q": '"restatement"', "tier": "flag", "label": "restatement"},
+    {"id": "delisting_notice",
+     "q": '"delisting notice" OR "notice of delisting" OR "deficiency letter"',
+     "tier": "flag", "label": "delisting notice"},
+)
+# The nightly search window always spans at least FRESH_DAYS, and reaches back to the
+# last successful run minus OVERLAP (full-text indexing lags acceptance) after an
+# outage, capped at MAX_DAYS. A name new to the watch/held set alerts only on matches
+# filed within FRESH_DAYS; anything older is recorded silently.
+FILING_FLAG_FRESH_DAYS = 7
+FILING_FLAG_OVERLAP_DAYS = 3
+FILING_FLAG_MAX_DAYS = 90
+# Health warns when the full-text stage hasn't completed for this many days.
+HEALTH_FILING_FLAGS_DAYS = 4
 # Health: prices are stale after this many calendar days without a new bar
 # (covers weekends + market holidays), fundamentals after a quarter end goes
 # unanswered this long (FSDS publishes in the weeks after quarter end).

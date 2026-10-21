@@ -1,0 +1,227 @@
+{
+ "browser": {
+  "mode": "launch",
+  "executable_path": "/Users/mpawlowski/Library/Caches/ms-playwright/chromium-1243/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
+ },
+ "start_url": {
+  "url": "http://127.0.0.1:8025/"
+ },
+ "actions": [
+  {
+   "step_id": "s01-scan-ready",
+   "action": "wait_for",
+   "locator": {
+    "kind": "css",
+    "selector": "#scan-table tbody tr:first-child"
+   },
+   "state": "visible",
+   "timeout_ms": 90000
+  },
+  {
+   "step_id": "s02-search-aapl",
+   "action": "fill",
+   "locator": {
+    "kind": "css",
+    "selector": "#search"
+   },
+   "value": {
+    "source": "literal",
+    "value": "AAPL"
+   }
+  },
+  {
+   "step_id": "s03-search-settle",
+   "action": "wait_for_timeout",
+   "duration_ms": 1500
+  },
+  {
+   "step_id": "s04-open-ticker",
+   "action": "click",
+   "locator": {
+    "kind": "css",
+    "selector": "#scan-table tbody tr[data-cik=\"320193\"]"
+   }
+  },
+  {
+   "step_id": "s05-ticker-head",
+   "action": "wait_for",
+   "locator": {
+    "kind": "css",
+    "selector": "#tk-body .tk-head"
+   },
+   "state": "visible",
+   "timeout_ms": 30000
+  },
+  {
+   "step_id": "s06-ticker-settle",
+   "action": "wait_for_timeout",
+   "duration_ms": 5000
+  },
+  {
+   "step_id": "s07-narrate",
+   "action": "click",
+   "locator": {
+    "kind": "css",
+    "selector": "#btn-narr"
+   }
+  },
+  {
+   "step_id": "s08-narrate-done",
+   "action": "wait_for",
+   "locator": {
+    "kind": "css",
+    "selector": "#btn-narr:not([disabled])"
+   },
+   "state": "visible",
+   "timeout_ms": 1500000
+  },
+  {
+   "step_id": "s09-panel",
+   "action": "click",
+   "locator": {
+    "kind": "css",
+    "selector": "#btn-panel"
+   }
+  },
+  {
+   "step_id": "s10-panel-done",
+   "action": "wait_for",
+   "locator": {
+    "kind": "css",
+    "selector": "#tk-body .ai-status.ok:has-text(\"grounded memos\"), #btn-panel:not([disabled])"
+   },
+   "state": "visible",
+   "timeout_ms": 2400000
+  },
+  {
+   "step_id": "s11-ask-fill",
+   "action": "fill",
+   "locator": {
+    "kind": "css",
+    "selector": "#ask-q"
+   },
+   "value": {
+    "source": "literal",
+    "value": "why is it ranked here?"
+   }
+  },
+  {
+   "step_id": "s12-ask-send",
+   "action": "click",
+   "locator": {
+    "kind": "css",
+    "selector": "#btn-ask"
+   }
+  },
+  {
+   "step_id": "s13-ask-done",
+   "action": "wait_for",
+   "locator": {
+    "kind": "css",
+    "selector": "#tk-body .ask-a:not(.muted), #tk-body .ask-flash"
+   },
+   "state": "visible",
+   "timeout_ms": 900000
+  },
+  {
+   "step_id": "s14-book",
+   "action": "click",
+   "locator": {
+    "kind": "css",
+    "selector": ".tab[data-view=\"scorecard\"]"
+   }
+  },
+  {
+   "step_id": "s15-book-ready",
+   "action": "wait_for",
+   "locator": {
+    "kind": "css",
+    "selector": "#sc-table tbody tr:first-child"
+   },
+   "state": "visible",
+   "timeout_ms": 30000
+  },
+  {
+   "step_id": "s16-markets",
+   "action": "click",
+   "locator": {
+    "kind": "css",
+    "selector": ".tab[data-view=\"markets\"]"
+   }
+  },
+  {
+   "step_id": "s17-markets-ready",
+   "action": "wait_for",
+   "locator": {
+    "kind": "css",
+    "selector": "#markets-body > .map-head"
+   },
+   "state": "visible",
+   "timeout_ms": 60000
+  },
+  {
+   "step_id": "s18-markets-settle",
+   "action": "wait_for_timeout",
+   "duration_ms": 4000
+  },
+  {
+   "step_id": "s19-paper",
+   "action": "click",
+   "locator": {
+    "kind": "css",
+    "selector": ".tab[data-view=\"paper\"]"
+   }
+  },
+  {
+   "step_id": "s20-paper-ready",
+   "action": "wait_for",
+   "locator": {
+    "kind": "css",
+    "selector": "#paper-body > :first-child"
+   },
+   "state": "visible",
+   "timeout_ms": 30000
+  },
+  {
+   "step_id": "s21-watch",
+   "action": "click",
+   "locator": {
+    "kind": "css",
+    "selector": ".tab[data-view=\"watch\"]"
+   }
+  },
+  {
+   "step_id": "s22-watch-ready",
+   "action": "wait_for",
+   "locator": {
+    "kind": "css",
+    "selector": "#watch-table tbody tr:first-child"
+   },
+   "state": "visible",
+   "timeout_ms": 30000
+  },
+  {
+   "step_id": "s23-watch-settle",
+   "action": "wait_for_timeout",
+   "duration_ms": 4000
+  }
+ ],
+ "capture": {
+  "after_each_step": [],
+  "at_end": [
+   "url",
+   "storage",
+   "screenshot"
+  ],
+  "events": [
+   "console",
+   "page-errors",
+   "network"
+  ],
+  "network": {
+   "request_body": false,
+   "response_body": false,
+   "header_values": false
+  }
+ }
+}

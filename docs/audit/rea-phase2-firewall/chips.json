@@ -1,0 +1,90 @@
+{
+ "browser": {
+  "mode": "launch",
+  "executable_path": "/Users/mpawlowski/Library/Caches/ms-playwright/chromium-1243/chrome-mac-arm64/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
+ },
+ "start_url": {
+  "url": "http://127.0.0.1:8025/#/ticker/320193"
+ },
+ "actions": [
+  {
+   "step_id": "aapl-head",
+   "action": "wait_for",
+   "locator": {
+    "kind": "css",
+    "selector": "#tk-body .tk-head .tk:has-text(\"AAPL\"), #tk-body .err"
+   },
+   "state": "visible",
+   "timeout_ms": 90000
+  },
+  {
+   "step_id": "aapl-settle",
+   "action": "wait_for_timeout",
+   "duration_ms": 3000
+  },
+  {
+   "step_id": "nvda-goto",
+   "action": "goto",
+   "destination": {
+    "url": "http://127.0.0.1:8025/#/ticker/1045810"
+   },
+   "wait_until": "commit"
+  },
+  {
+   "step_id": "nvda-head",
+   "action": "wait_for",
+   "locator": {
+    "kind": "css",
+    "selector": "#tk-body .tk-head .tk:has-text(\"NVDA\"), #tk-body .err"
+   },
+   "state": "visible",
+   "timeout_ms": 90000
+  },
+  {
+   "step_id": "nvda-settle",
+   "action": "wait_for_timeout",
+   "duration_ms": 3000
+  },
+  {
+   "step_id": "wulf-goto",
+   "action": "goto",
+   "destination": {
+    "url": "http://127.0.0.1:8025/#/ticker/1083301"
+   },
+   "wait_until": "commit"
+  },
+  {
+   "step_id": "wulf-head",
+   "action": "wait_for",
+   "locator": {
+    "kind": "css",
+    "selector": "#tk-body .tk-head .tk:has-text(\"WULF\"), #tk-body .err"
+   },
+   "state": "visible",
+   "timeout_ms": 90000
+  },
+  {
+   "step_id": "wulf-settle",
+   "action": "wait_for_timeout",
+   "duration_ms": 3000
+  }
+ ],
+ "capture": {
+  "after_each_step": [
+   "accessibility"
+  ],
+  "at_end": [
+   "url"
+  ],
+  "events": [
+   "console",
+   "page-errors",
+   "network"
+  ],
+  "network": {
+   "request_body": false,
+   "response_body": true,
+   "header_values": false
+  }
+ }
+}
