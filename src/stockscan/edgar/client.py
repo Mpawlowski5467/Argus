@@ -15,6 +15,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
 import httpx
 
@@ -43,6 +44,7 @@ class EdgarClient:
 
     DATA_HOST = "https://data.sec.gov"
     WWW_HOST = "https://www.sec.gov"
+    EFTS_HOST = "https://efts.sec.gov"
 
     def __init__(
         self,
@@ -147,3 +149,29 @@ class EdgarClient:
     def company_tickers(self) -> dict:
         """The full ticker <-> CIK map. Small JSON; doubles as a connectivity check."""
         return self.get_json(f"{self.WWW_HOST}/files/company_tickers.json")
+
+    def full_text_search(self, q: str, *, forms=("8-K",), ciks=(), startdt=None,
+                         enddt=None, from_: int = 0) -> dict:
+        """One page (100 documents) of EDGAR full-text search — the JSON backend behind
+        www.sec.gov/edgar/search (undocumented; contract recorded in
+        docs/audit/rea-phase3-edgar-fts/efts_api.md).
+
+        ``q`` takes "quoted phrases" and OR. ``forms`` filters on the ROOT form, so 8-K
+        also returns 8-K/A. Hits are per DOCUMENT (an exhibit can match on its own) and
+        relevance-ordered — callers page with ``from_`` to ``hits.total.value`` and
+        dedupe on ``_source.adsh``. Dates are inclusive ``YYYY-MM-DD``."""
+        params: dict = {"q": q}
+        if startdt or enddt:
+            params["dateRange"] = "custom"
+            if startdt:
+                params["startdt"] = str(startdt)
+            if enddt:
+                params["enddt"] = str(enddt)
+        if forms:
+            params["category"] = "custom"
+            params["forms"] = ",".join(forms)
+        if ciks:
+            params["ciks"] = ",".join(f"{int(c):010d}" for c in ciks)
+        if from_:
+            params["from"] = int(from_)
+        return self.get_json(f"{self.EFTS_HOST}/LATEST/search-index?{urlencode(params)}")

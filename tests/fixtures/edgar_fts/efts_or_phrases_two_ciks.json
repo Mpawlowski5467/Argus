@@ -1,0 +1,873 @@
+{
+ "took": 89,
+ "timed_out": false,
+ "_shards": {
+  "total": 50,
+  "successful": 50,
+  "skipped": 0,
+  "failed": 0
+ },
+ "hits": {
+  "total": {
+   "value": 14,
+   "relation": "eq"
+  },
+  "max_score": 13.034321,
+  "hits": [
+   {
+    "_index": "edgar_file",
+    "_id": "0001493152-26-043135:ex99-3.htm",
+    "_score": 13.034321,
+    "_source": {
+     "ciks": [
+      "0001948864"
+     ],
+     "period_ending": "2026-09-17",
+     "file_num": [
+      "001-42274"
+     ],
+     "display_names": [
+      "HEALTHY CHOICE WELLNESS CORP.  (HCWC)  (CIK 0001948864)"
+     ],
+     "xsl": null,
+     "sequence": "14",
+     "root_forms": [
+      "8-K"
+     ],
+     "file_date": "2026-09-17",
+     "biz_states": [
+      "FL"
+     ],
+     "sics": [
+      "5411"
+     ],
+     "form": "8-K",
+     "adsh": "0001493152-26-043135",
+     "film_num": [
+      "261387132"
+     ],
+     "biz_locations": [
+      "Hollywood, FL"
+     ],
+     "file_type": "EX-99.3",
+     "file_description": "EX-99.3",
+     "inc_states": [
+      "DE"
+     ],
+     "items": [
+      "1.01",
+      "2.01",
+      "2.02",
+      "3.02",
+      "3.03",
+      "4.01",
+      "5.01",
+      "5.02",
+      "5.03",
+      "9.01"
+     ]
+    }
+   },
+   {
+    "_index": "edgar_file",
+    "_id": "0001493152-26-043135:ex99-1.htm",
+    "_score": 12.387593,
+    "_source": {
+     "ciks": [
+      "0001948864"
+     ],
+     "period_ending": "2026-09-17",
+     "file_num": [
+      "001-42274"
+     ],
+     "display_names": [
+      "HEALTHY CHOICE WELLNESS CORP.  (HCWC)  (CIK 0001948864)"
+     ],
+     "xsl": null,
+     "sequence": "12",
+     "root_forms": [
+      "8-K"
+     ],
+     "file_date": "2026-09-17",
+     "biz_states": [
+      "FL"
+     ],
+     "sics": [
+      "5411"
+     ],
+     "form": "8-K",
+     "adsh": "0001493152-26-043135",
+     "film_num": [
+      "261387132"
+     ],
+     "biz_locations": [
+      "Hollywood, FL"
+     ],
+     "file_type": "EX-99.1",
+     "file_description": "EX-99.1",
+     "inc_states": [
+      "DE"
+     ],
+     "items": [
+      "1.01",
+      "2.01",
+      "2.02",
+      "3.02",
+      "3.03",
+      "4.01",
+      "5.01",
+      "5.02",
+      "5.03",
+      "9.01"
+     ]
+    }
+   },
+   {
+    "_index": "edgar_file",
+    "_id": "0001493152-26-043567:ex99-1.htm",
+    "_score": 12.27569,
+    "_source": {
+     "ciks": [
+      "0001407583"
+     ],
+     "period_ending": "2026-09-21",
+     "file_num": [
+      "333-150028"
+     ],
+     "display_names": [
+      "Bunker Hill Mining Corp.  (BHLL)  (CIK 0001407583)"
+     ],
+     "xsl": null,
+     "sequence": "4",
+     "root_forms": [
+      "8-K"
+     ],
+     "file_date": "2026-09-21",
+     "biz_states": [
+      "ID"
+     ],
+     "sics": [
+      "1000"
+     ],
+     "form": "8-K",
+     "adsh": "0001493152-26-043567",
+     "film_num": [
+      "261394117"
+     ],
+     "biz_locations": [
+      "Kellogg, ID"
+     ],
+     "file_type": "EX-99.1",
+     "ma_i_individual": null,
+     "file_description": "EX-99.1",
+     "inc_states": [
+      "NV"
+     ],
+     "items": [
+      "8.01",
+      "9.01"
+     ]
+    }
+   },
+   {
+    "_index": "edgar_file",
+    "_id": "0001493152-26-043567:ex99-3.htm",
+    "_score": 11.697537,
+    "_source": {
+     "ciks": [
+      "0001407583"
+     ],
+     "period_ending": "2026-09-21",
+     "file_num": [
+      "333-150028"
+     ],
+     "display_names": [
+      "Bunker Hill Mining Corp.  (BHLL)  (CIK 0001407583)"
+     ],
+     "xsl": null,
+     "sequence": "6",
+     "root_forms": [
+      "8-K"
+     ],
+     "file_date": "2026-09-21",
+     "biz_states": [
+      "ID"
+     ],
+     "sics": [
+      "1000"
+     ],
+     "form": "8-K",
+     "adsh": "0001493152-26-043567",
+     "film_num": [
+      "261394117"
+     ],
+     "biz_locations": [
+      "Kellogg, ID"
+     ],
+     "file_type": "EX-99.3",
+     "ma_i_individual": null,
+     "file_description": "EX-99.3",
+     "inc_states": [
+      "NV"
+     ],
+     "items": [
+      "8.01",
+      "9.01"
+     ]
+    }
+   },
+   {
+    "_index": "edgar_file",
+    "_id": "0001493152-26-043567:ex99-4.htm",
+    "_score": 11.434218,
+    "_source": {
+     "ciks": [
+      "0001407583"
+     ],
+     "period_ending": "2026-09-21",
+     "file_num": [
+      "333-150028"
+     ],
+     "display_names": [
+      "Bunker Hill Mining Corp.  (BHLL)  (CIK 0001407583)"
+     ],
+     "xsl": null,
+     "sequence": "7",
+     "root_forms": [
+      "8-K"
+     ],
+     "file_date": "2026-09-21",
+     "biz_states": [
+      "ID"
+     ],
+     "sics": [
+      "1000"
+     ],
+     "form": "8-K",
+     "adsh": "0001493152-26-043567",
+     "film_num": [
+      "261394117"
+     ],
+     "biz_locations": [
+      "Kellogg, ID"
+     ],
+     "file_type": "EX-99.4",
+     "ma_i_individual": null,
+     "file_description": "EX-99.4",
+     "inc_states": [
+      "NV"
+     ],
+     "items": [
+      "8.01",
+      "9.01"
+     ]
+    }
+   },
+   {
+    "_index": "edgar_file",
+    "_id": "0001493152-26-043135:ex23-2.htm",
+    "_score": 10.071219,
+    "_source": {
+     "ciks": [
+      "0001948864"
+     ],
+     "period_ending": "2026-09-17",
+     "file_num": [
+      "001-42274"
+     ],
+     "display_names": [
+      "HEALTHY CHOICE WELLNESS CORP.  (HCWC)  (CIK 0001948864)"
+     ],
+     "xsl": null,
+     "sequence": "11",
+     "root_forms": [
+      "8-K"
+     ],
+     "file_date": "2026-09-17",
+     "biz_states": [
+      "FL"
+     ],
+     "sics": [
+      "5411"
+     ],
+     "form": "8-K",
+     "adsh": "0001493152-26-043135",
+     "film_num": [
+      "261387132"
+     ],
+     "biz_locations": [
+      "Hollywood, FL"
+     ],
+     "file_type": "EX-23.2",
+     "file_description": "EX-23.2",
+     "inc_states": [
+      "DE"
+     ],
+     "items": [
+      "1.01",
+      "2.01",
+      "2.02",
+      "3.02",
+      "3.03",
+      "4.01",
+      "5.01",
+      "5.02",
+      "5.03",
+      "9.01"
+     ]
+    }
+   },
+   {
+    "_index": "edgar_file",
+    "_id": "0001493152-26-043135:ex99-2.htm",
+    "_score": 9.098165,
+    "_source": {
+     "ciks": [
+      "0001948864"
+     ],
+     "period_ending": "2026-09-17",
+     "file_num": [
+      "001-42274"
+     ],
+     "display_names": [
+      "HEALTHY CHOICE WELLNESS CORP.  (HCWC)  (CIK 0001948864)"
+     ],
+     "xsl": null,
+     "sequence": "13",
+     "root_forms": [
+      "8-K"
+     ],
+     "file_date": "2026-09-17",
+     "biz_states": [
+      "FL"
+     ],
+     "sics": [
+      "5411"
+     ],
+     "form": "8-K",
+     "adsh": "0001493152-26-043135",
+     "film_num": [
+      "261387132"
+     ],
+     "biz_locations": [
+      "Hollywood, FL"
+     ],
+     "file_type": "EX-99.2",
+     "file_description": "EX-99.2",
+     "inc_states": [
+      "DE"
+     ],
+     "items": [
+      "1.01",
+      "2.01",
+      "2.02",
+      "3.02",
+      "3.03",
+      "4.01",
+      "5.01",
+      "5.02",
+      "5.03",
+      "9.01"
+     ]
+    }
+   },
+   {
+    "_index": "edgar_file",
+    "_id": "0001493152-26-043135:ex99-4.htm",
+    "_score": 7.575351,
+    "_source": {
+     "ciks": [
+      "0001948864"
+     ],
+     "period_ending": "2026-09-17",
+     "file_num": [
+      "001-42274"
+     ],
+     "display_names": [
+      "HEALTHY CHOICE WELLNESS CORP.  (HCWC)  (CIK 0001948864)"
+     ],
+     "xsl": null,
+     "sequence": "15",
+     "root_forms": [
+      "8-K"
+     ],
+     "file_date": "2026-09-17",
+     "biz_states": [
+      "FL"
+     ],
+     "sics": [
+      "5411"
+     ],
+     "form": "8-K",
+     "adsh": "0001493152-26-043135",
+     "film_num": [
+      "261387132"
+     ],
+     "biz_locations": [
+      "Hollywood, FL"
+     ],
+     "file_type": "EX-99.4",
+     "file_description": "EX-99.4",
+     "inc_states": [
+      "DE"
+     ],
+     "items": [
+      "1.01",
+      "2.01",
+      "2.02",
+      "3.02",
+      "3.03",
+      "4.01",
+      "5.01",
+      "5.02",
+      "5.03",
+      "9.01"
+     ]
+    }
+   },
+   {
+    "_index": "edgar_file",
+    "_id": "0001493152-26-043135:form8-k.htm",
+    "_score": 6.912233,
+    "_source": {
+     "ciks": [
+      "0001948864"
+     ],
+     "period_ending": "2026-09-17",
+     "file_num": [
+      "001-42274"
+     ],
+     "display_names": [
+      "HEALTHY CHOICE WELLNESS CORP.  (HCWC)  (CIK 0001948864)"
+     ],
+     "xsl": null,
+     "sequence": 1,
+     "root_forms": [
+      "8-K"
+     ],
+     "file_date": "2026-09-17",
+     "biz_states": [
+      "FL"
+     ],
+     "sics": [
+      "5411"
+     ],
+     "form": "8-K",
+     "adsh": "0001493152-26-043135",
+     "film_num": [
+      "261387132"
+     ],
+     "biz_locations": [
+      "Hollywood, FL"
+     ],
+     "file_type": "8-K",
+     "file_description": "8-K",
+     "inc_states": [
+      "DE"
+     ],
+     "items": [
+      "1.01",
+      "2.01",
+      "2.02",
+      "3.02",
+      "3.03",
+      "4.01",
+      "5.01",
+      "5.02",
+      "5.03",
+      "9.01"
+     ]
+    }
+   },
+   {
+    "_index": "edgar_file",
+    "_id": "0001493152-26-043567:ex99-2.htm",
+    "_score": 6.28784,
+    "_source": {
+     "ciks": [
+      "0001407583"
+     ],
+     "period_ending": "2026-09-21",
+     "file_num": [
+      "333-150028"
+     ],
+     "display_names": [
+      "Bunker Hill Mining Corp.  (BHLL)  (CIK 0001407583)"
+     ],
+     "xsl": null,
+     "sequence": "5",
+     "root_forms": [
+      "8-K"
+     ],
+     "file_date": "2026-09-21",
+     "biz_states": [
+      "ID"
+     ],
+     "sics": [
+      "1000"
+     ],
+     "form": "8-K",
+     "adsh": "0001493152-26-043567",
+     "film_num": [
+      "261394117"
+     ],
+     "biz_locations": [
+      "Kellogg, ID"
+     ],
+     "file_type": "EX-99.2",
+     "ma_i_individual": null,
+     "file_description": "EX-99.2",
+     "inc_states": [
+      "NV"
+     ],
+     "items": [
+      "8.01",
+      "9.01"
+     ]
+    }
+   },
+   {
+    "_index": "edgar_file",
+    "_id": "0001493152-26-043135:ex10-3.htm",
+    "_score": 3.296411,
+    "_source": {
+     "ciks": [
+      "0001948864"
+     ],
+     "period_ending": "2026-09-17",
+     "file_num": [
+      "001-42274"
+     ],
+     "display_names": [
+      "HEALTHY CHOICE WELLNESS CORP.  (HCWC)  (CIK 0001948864)"
+     ],
+     "xsl": null,
+     "sequence": "5",
+     "root_forms": [
+      "8-K"
+     ],
+     "file_date": "2026-09-17",
+     "biz_states": [
+      "FL"
+     ],
+     "sics": [
+      "5411"
+     ],
+     "form": "8-K",
+     "adsh": "0001493152-26-043135",
+     "film_num": [
+      "261387132"
+     ],
+     "biz_locations": [
+      "Hollywood, FL"
+     ],
+     "file_type": "EX-10.3",
+     "file_description": "EX-10.3",
+     "inc_states": [
+      "DE"
+     ],
+     "items": [
+      "1.01",
+      "2.01",
+      "2.02",
+      "3.02",
+      "3.03",
+      "4.01",
+      "5.01",
+      "5.02",
+      "5.03",
+      "9.01"
+     ]
+    }
+   },
+   {
+    "_index": "edgar_file",
+    "_id": "0001493152-26-043572:ex1-1.htm",
+    "_score": 2.0991755,
+    "_source": {
+     "ciks": [
+      "0001948864"
+     ],
+     "period_ending": "2026-09-17",
+     "file_num": [
+      "001-42274"
+     ],
+     "display_names": [
+      "Host Digital Inc.  (HCWC, HOST)  (CIK 0001948864)"
+     ],
+     "xsl": null,
+     "sequence": "2",
+     "root_forms": [
+      "8-K"
+     ],
+     "file_date": "2026-09-21",
+     "biz_states": [
+      "FL"
+     ],
+     "sics": [
+      "5411"
+     ],
+     "form": "8-K",
+     "adsh": "0001493152-26-043572",
+     "film_num": [
+      "261394250"
+     ],
+     "biz_locations": [
+      "Hollywood, FL"
+     ],
+     "file_type": "EX-1.1",
+     "ma_i_individual": null,
+     "file_description": "EX-1.1",
+     "inc_states": [
+      "DE"
+     ],
+     "items": [
+      "1.01",
+      "7.01",
+      "9.01"
+     ]
+    }
+   },
+   {
+    "_index": "edgar_file",
+    "_id": "0001493152-26-043623:ex1-1.htm",
+    "_score": 2.0991755,
+    "_source": {
+     "ciks": [
+      "0001948864"
+     ],
+     "period_ending": "2026-09-17",
+     "file_num": [
+      "001-42274"
+     ],
+     "display_names": [
+      "Host Digital Inc.  (HCWC, HOST)  (CIK 0001948864)"
+     ],
+     "xsl": null,
+     "sequence": "2",
+     "root_forms": [
+      "8-K"
+     ],
+     "file_date": "2026-09-22",
+     "biz_states": [
+      "FL"
+     ],
+     "sics": [
+      "5411"
+     ],
+     "form": "8-K/A",
+     "adsh": "0001493152-26-043623",
+     "film_num": [
+      "261395173"
+     ],
+     "biz_locations": [
+      "Hollywood, FL"
+     ],
+     "file_type": "EX-1.1",
+     "ma_i_individual": null,
+     "file_description": "EX-1.1",
+     "inc_states": [
+      "DE"
+     ],
+     "items": [
+      "9.01"
+     ]
+    }
+   },
+   {
+    "_index": "edgar_file",
+    "_id": "0001493152-26-045111:ex2-1.htm",
+    "_score": 1.6543117,
+    "_source": {
+     "ciks": [
+      "0001407583"
+     ],
+     "period_ending": "2026-08-20",
+     "file_num": [
+      "333-150028"
+     ],
+     "display_names": [
+      "Bunker Hill Mining Corp.  (BHLL)  (CIK 0001407583)"
+     ],
+     "xsl": null,
+     "sequence": "2",
+     "root_forms": [
+      "8-K"
+     ],
+     "file_date": "2026-09-30",
+     "biz_states": [
+      "ID"
+     ],
+     "sics": [
+      "1000"
+     ],
+     "form": "8-K/A",
+     "adsh": "0001493152-26-045111",
+     "film_num": [
+      "261427323"
+     ],
+     "biz_locations": [
+      "Kellogg, ID"
+     ],
+     "file_type": "EX-2.1",
+     "ma_i_individual": null,
+     "file_description": "EX-2.1",
+     "inc_states": [
+      "NV"
+     ],
+     "items": [
+      "9.01"
+     ]
+    }
+   }
+  ]
+ },
+ "aggregations": {
+  "entity_filter": {
+   "doc_count_error_upper_bound": 0,
+   "sum_other_doc_count": 0,
+   "buckets": [
+    {
+     "key": "HEALTHY CHOICE WELLNESS CORP.  (HCWC)  (CIK 0001948864)",
+     "doc_count": 7
+    },
+    {
+     "key": "Bunker Hill Mining Corp.  (BHLL)  (CIK 0001407583)",
+     "doc_count": 5
+    }
+   ]
+  },
+  "sic_filter": {
+   "doc_count_error_upper_bound": 0,
+   "sum_other_doc_count": 0,
+   "buckets": [
+    {
+     "key": "5411",
+     "doc_count": 9
+    },
+    {
+     "key": "1000",
+     "doc_count": 5
+    }
+   ]
+  },
+  "biz_states_filter": {
+   "doc_count_error_upper_bound": 0,
+   "sum_other_doc_count": 0,
+   "buckets": [
+    {
+     "key": "FL",
+     "doc_count": 9
+    },
+    {
+     "key": "ID",
+     "doc_count": 5
+    }
+   ]
+  },
+  "form_filter": {
+   "doc_count_error_upper_bound": 0,
+   "sum_other_doc_count": 0,
+   "buckets": [
+    {
+     "key": "8-K",
+     "doc_count": 14
+    }
+   ]
+  }
+ },
+ "query": {
+  "_source": {
+   "exclude": [
+    "doc_text"
+   ]
+  },
+  "query": {
+   "bool": {
+    "must": [],
+    "must_not": [],
+    "should": [
+     {
+      "match_phrase": {
+       "doc_text": "going concern"
+      }
+     },
+     {
+      "match_phrase": {
+       "doc_text": "material weakness"
+      }
+     },
+     {
+      "match_phrase": {
+       "doc_text": "restatement"
+      }
+     },
+     {
+      "match_phrase": {
+       "doc_text": "non-reliance"
+      }
+     },
+     {
+      "match_phrase": {
+       "doc_text": "delisting"
+      }
+     }
+    ],
+    "filter": [
+     {
+      "terms": {
+       "root_forms": [
+        "8-K"
+       ]
+      }
+     },
+     {
+      "terms": {
+       "ciks": [
+        "0001948864",
+        "0001407583"
+       ]
+      }
+     },
+     {
+      "range": {
+       "file_date": {
+        "gte": "2026-09-01",
+        "lte": "2026-10-17"
+       }
+      }
+     }
+    ],
+    "minimum_should_match": 1
+   }
+  },
+  "from": 0,
+  "size": 100,
+  "aggregations": {
+   "form_filter": {
+    "terms": {
+     "field": "root_forms",
+     "size": 30
+    }
+   },
+   "entity_filter": {
+    "terms": {
+     "field": "display_names.raw",
+     "size": 30
+    }
+   },
+   "sic_filter": {
+    "terms": {
+     "field": "sics",
+     "size": 30
+    }
+   },
+   "biz_states_filter": {
+    "terms": {
+     "field": "biz_states",
+     "size": 30
+    }
+   }
+  }
+ }
+}

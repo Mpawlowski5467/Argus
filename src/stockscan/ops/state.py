@@ -104,6 +104,26 @@ create table if not exists positions (
     cost_basis real not null,
     added_at text not null
 );
+create table if not exists filing_flags (
+    -- 8-K filing flags (monitor): one row per rule an 8-K matched. Display/alert only —
+    -- never read into the score. Keyed by ACCESSION: known_filings has no accession, so
+    -- two 8-Ks filed by one company on one day would collide there.
+    cik integer not null,
+    accession text not null,
+    rule text not null,
+    source text not null,                      -- 'item' | 'text'
+    form text not null,
+    file_date text not null,
+    docs text not null default '[]',           -- matched documents (JSON list)
+    first_seen text not null,
+    primary key (cik, accession, rule)
+);
+create table if not exists filing_flag_ciks (
+    -- names the filing-flag detectors have already covered once: a name missing here
+    -- is NEW to the watch/held set, and only alerts on recent matches (bootstrap)
+    cik integer primary key,
+    first_seen text not null
+);
 """
 
 
@@ -374,6 +394,40 @@ class OpsState:
             "select max(filed_date) from known_filings where cik = ?", (int(cik),)
         ).fetchone()
         return row[0]
+
+    # -- 8-K filing flags (display/alert only) ----------------------------------------
+    def filing_flag_seen(self, cik: int, accession: str) -> bool:
+        """Whether ANY rule has already been recorded for this filing."""
+        return self._db.execute(
+            "select 1 from filing_flags where cik = ? and accession = ? limit 1",
+            (int(cik), str(accession))).fetchone() is not None
+
+    def add_filing_flags(self, rows: list[dict]) -> list[dict]:
+        """Insert flag rows, returning only the (cik, accession, rule) rows not seen before.
+
+        Each row: {cik, accession, rule, source, form, file_date, docs?}. Idempotent."""
+        new: list[dict] = []
+        for r in rows:
+            cur = self._db.execute(
+                "insert or ignore into filing_flags "
+                "(cik, accession, rule, source, form, file_date, docs, first_seen) "
+                "values (?,?,?,?,?,?,?,?)",
+                (int(r["cik"]), str(r["accession"]), r["rule"], r["source"], r["form"],
+                 str(r["file_date"]), json.dumps(list(r.get("docs") or [])), _utcnow()),
+            )
+            if cur.rowcount:
+                new.append(r)
+        self._db.commit()
+        return new
+
+    def filing_flag_ciks(self) -> set[int]:
+        return {int(r[0]) for r in self._db.execute("select cik from filing_flag_ciks")}
+
+    def mark_filing_flag_ciks(self, ciks) -> None:
+        self._db.executemany(
+            "insert or ignore into filing_flag_ciks (cik, first_seen) values (?,?)",
+            [(int(c), _utcnow()) for c in ciks])
+        self._db.commit()
 
     # -- alerts ------------------------------------------------------------------------
     def add_alert(self, kind: str, message: str, cik: int | None = None,

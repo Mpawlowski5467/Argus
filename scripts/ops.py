@@ -5,7 +5,9 @@
   uv run python scripts/ops.py fsds               # ingest any missing FSDS quarter
   uv run python scripts/ops.py universe           # security-master refresh
   uv run python scripts/ops.py delistings         # rebuild the delist/dereg ledger
-  uv run python scripts/ops.py monitor [--no-llm] [--no-edgar]
+  uv run python scripts/ops.py monitor [--no-llm] [--no-edgar] [--no-filing-flags]
+  uv run python scripts/ops.py filing-flags        # 8-K flags for watched + held names
+  uv run python scripts/ops.py filing-flags --dry-run [--since 90d]   # preview, writes nothing
   uv run python scripts/ops.py news [--no-llm]     # watchlist headline memory (live-view)
   uv run python scripts/ops.py themes              # auto-tag AI/SaaS/EV markets (live-view)
   uv run python scripts/ops.py reload              # make the running web app re-read disk
@@ -25,7 +27,8 @@
 quarter is due) -> delistings (when a quarter has passed; the ledger sets the
 distress head's censor date, so nobody rebuilding it freezes that head's training
 anchor) -> universe (when a month has passed) -> paper log (when a completed
-month is unlogged) -> monitor -> news (watchlist headline memory,
+month is unlogged) -> monitor (incl. 8-K filing flags for watched + held names)
+-> news (watchlist headline memory,
 firewalled from the signal) -> reload (hand the always-on app the new data;
 without it the nightly refreshes disk into a server that never re-reads it).
 Every step is idempotent, so a run missed while the machine slept simply catches
@@ -374,8 +377,52 @@ def job_panels(state: OpsState, max_names: int = 25) -> dict:
     return _run_logged(state, "panels", _run)
 
 
+def job_filing_flags(state: OpsState) -> dict:
+    """The 8-K filing-flag pass on its own (the nightly runs it inside the monitor)."""
+    from stockscan.edgar.client import EdgarClient
+    from stockscan.ops.monitor import alert_universe, run_filing_flags
+
+    def _run():
+        with EdgarClient() as client:
+            return run_filing_flags(state, alert_universe(state), client)
+
+    return _run_logged(state, "filing_flags", _run)
+
+
+def _parse_days(text: str) -> int:
+    """'90d' / '90' -> 90."""
+    return int(str(text).strip().lower().rstrip("d"))
+
+
+def cmd_filing_flags_preview(since: str | None) -> int:
+    """What the 8-K rules would flag for the CURRENT watch + held names — read-only:
+    no flags, alerts, cursor or job row are written."""
+    from stockscan.edgar.client import EdgarClient
+    from stockscan.ops.monitor import alert_universe, run_filing_flags
+
+    today = pd.Timestamp.now().normalize()
+    with OpsState() as state:
+        ciks = alert_universe(state)
+        if not ciks:
+            print("nothing to check — the watchlist and positions are empty")
+            return 0
+        startdt = str((today - pd.Timedelta(days=_parse_days(since))).date()) if since else None
+        with EdgarClient() as client:
+            out = run_filing_flags(state, ciks, client, today=today, dry_run=True,
+                                   startdt=startdt)
+    print(f"8-K filing flags — DRY RUN, nothing written: {out['names']} names, "
+          f"{out['window'][0]} -> {out['window'][1]}, {out['requests']} SEC requests")
+    for p in out["preview"]:
+        print(f"  [{p['kind']}] {p['message']}\n      {p['url']}")
+    if not out["preview"]:
+        print("  no matches in the window")
+    for e in out["errors"]:
+        print(f"  ERROR {e['rule']}: {e['error']}")
+    return 1 if out["errors"] else 0
+
+
 def job_monitor(state: OpsState, no_llm: bool = False, edgar: bool = True,
-                alerts_ok: bool = True) -> dict:
+                alerts_ok: bool = True, filing_flags: bool | None = None) -> dict:
     from stockscan.narrate.llm import make_llm
     from stockscan.ops.monitor import run_monitor
 
@@ -388,7 +435,8 @@ def job_monitor(state: OpsState, no_llm: bool = False, edgar: bool = True,
     llm_light = make_llm("light") if use_llm else None
     return _run_logged(state, "monitor", run_monitor, state,
                        llm_full=llm_full, llm_light=llm_light,
-                       narrate=True, edgar=edgar, alerts_ok=alerts_ok)
+                       narrate=True, edgar=edgar, alerts_ok=alerts_ok,
+                       filing_flags=filing_flags)
 
 
 def job_nightly(state: OpsState, no_llm: bool = False) -> int:
@@ -593,6 +641,13 @@ def main(argv=None) -> int:
     p = sub.add_parser("monitor")
     p.add_argument("--no-llm", action="store_true")
     p.add_argument("--no-edgar", action="store_true")
+    p.add_argument("--no-filing-flags", action="store_true",
+                   help="skip the 8-K filing-flag pass")
+    p = sub.add_parser("filing-flags", help="8-K filing flags for watched + held names")
+    p.add_argument("--dry-run", action="store_true",
+                   help="preview what would be flagged; write nothing")
+    p.add_argument("--since", default=None,
+                   help="preview window, e.g. 90d (with --dry-run; default: tonight's window)")
     p = sub.add_parser("news")
     p.add_argument("--no-llm", action="store_true", help="heuristic extraction only")
     sub.add_parser("themes")
@@ -689,6 +744,12 @@ def main(argv=None) -> int:
     if args.cmd == "install-launchd":
         return install_launchd(dry_run=args.dry_run, uninstall=args.uninstall)
 
+    if args.cmd == "filing-flags" and args.dry_run:   # read-only: no lock needed
+        return cmd_filing_flags_preview(args.since)
+    if args.cmd == "filing-flags" and args.since:
+        print("--since only applies to --dry-run (the scheduled pass follows its cursor)")
+        return 2
+
     # everything below touches shared state — one repo-wide lock
     try:
         with job_lock("ops"):
@@ -702,7 +763,10 @@ def main(argv=None) -> int:
                 elif args.cmd == "delistings":
                     job_delistings(state)   # manual override: always rebuilds
                 elif args.cmd == "monitor":
-                    job_monitor(state, no_llm=args.no_llm, edgar=not args.no_edgar)
+                    job_monitor(state, no_llm=args.no_llm, edgar=not args.no_edgar,
+                                filing_flags=False if args.no_filing_flags else None)
+                elif args.cmd == "filing-flags":
+                    job_filing_flags(state)
                 elif args.cmd == "news":
                     job_news(state, no_llm=args.no_llm)
                 elif args.cmd == "themes":
